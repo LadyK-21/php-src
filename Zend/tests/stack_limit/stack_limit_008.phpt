@@ -1,9 +1,13 @@
 --TEST--
 Stack limit 008 - Exception handling
+--SKIPIF--
+<?php
+if (!function_exists('zend_test_zend_call_stack_get')) die("skip zend_test_zend_call_stack_get() is not available");
+?>
 --EXTENSIONS--
 zend_test
 --INI--
-zend.max_allowed_stack_size=128K
+zend.max_allowed_stack_size=512K
 --FILE--
 <?php
 
@@ -51,4 +55,4 @@ array(4) {
   string(%d) "0x%x"
 }
 Will throw:
-Maximum call stack size of %d bytes reached. Infinite recursion?
+Maximum call stack size of %d bytes (zend.max_allowed_stack_size - zend.reserved_stack_size) reached. Infinite recursion?

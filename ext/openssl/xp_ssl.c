@@ -18,7 +18,7 @@
 */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
@@ -36,11 +36,10 @@
 #include <openssl/bn.h>
 #include <openssl/dh.h>
 
-#include <errno.h>
-
 #ifdef PHP_WIN32
 #include "win32/winutil.h"
 #include "win32/time.h"
+#include <Ws2tcpip.h>
 #include <Wincrypt.h>
 /* These are from Wincrypt.h, they conflict with OpenSSL */
 #undef X509_NAME
@@ -50,6 +49,10 @@
 
 #ifndef MSG_DONTWAIT
 # define MSG_DONTWAIT 0
+#endif
+
+#ifdef HAVE_ARPA_INET_H
+#include <arpa/inet.h>
 #endif
 
 /* Flags for determining allowed stream crypto methods */
@@ -73,7 +76,7 @@
 #define HAVE_TLS12 1
 #endif
 
-#if OPENSSL_VERSION_NUMBER >= 0x10101000 && !defined(OPENSSL_NO_TLS1_3)
+#ifndef OPENSSL_NO_TLS1_3
 #define HAVE_TLS13 1
 #endif
 
@@ -86,7 +89,7 @@
 #define HAVE_TLS_ALPN 1
 #endif
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)
+#ifndef LIBRESSL_VERSION_NUMBER
 #define HAVE_SEC_LEVEL 1
 #endif
 
@@ -127,6 +130,24 @@
 #define PHP_X509_NAME_ENTRY_TO_UTF8(ne, i, out) \
 	ASN1_STRING_to_UTF8(&out, X509_NAME_ENTRY_get_data(X509_NAME_get_entry(ne, i)))
 
+#ifdef HAVE_IPV6
+/* Used for IPv6 Address peer verification */
+#define EXPAND_IPV6_ADDRESS(_str, _bytes) \
+	do { \
+		snprintf(_str, 40, "%X:%X:%X:%X:%X:%X:%X:%X", \
+			_bytes[0] << 8 | _bytes[1], \
+			_bytes[2] << 8 | _bytes[3], \
+			_bytes[4] << 8 | _bytes[5], \
+			_bytes[6] << 8 | _bytes[7], \
+			_bytes[8] << 8 | _bytes[9], \
+			_bytes[10] << 8 | _bytes[11], \
+			_bytes[12] << 8 | _bytes[13], \
+			_bytes[14] << 8 | _bytes[15] \
+		); \
+	} while(0)
+#define HAVE_IPV6_SAN 1
+#endif
+
 #if PHP_OPENSSL_API_VERSION < 0x10100
 static RSA *php_openssl_tmp_rsa_cb(SSL *s, int is_export, int keylength);
 #endif
@@ -138,7 +159,7 @@ static struct timeval php_openssl_subtract_timeval(struct timeval a, struct time
 static int php_openssl_compare_timeval(struct timeval a, struct timeval b);
 static ssize_t php_openssl_sockop_io(int read, php_stream *stream, char *buf, size_t count);
 
-const php_stream_ops php_openssl_socket_ops;
+static const php_stream_ops php_openssl_socket_ops;
 
 /* Certificate contexts used for server-side SNI selection */
 typedef struct _php_openssl_sni_cert_t {
@@ -438,6 +459,19 @@ static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /
 	GENERAL_NAMES *alt_names = X509_get_ext_d2i(peer, NID_subject_alt_name, 0, 0);
 	int alt_name_count = sk_GENERAL_NAME_num(alt_names);
 
+#ifdef HAVE_IPV6_SAN
+	/* detect if subject name is an IPv6 address and expand once if required */
+	char subject_name_ipv6_expanded[40];
+	unsigned char ipv6[16];
+	bool subject_name_is_ipv6 = false;
+	subject_name_ipv6_expanded[0] = 0;
+
+	if (inet_pton(AF_INET6, subject_name, &ipv6)) {
+		EXPAND_IPV6_ADDRESS(subject_name_ipv6_expanded, ipv6);
+		subject_name_is_ipv6 = true;
+	}
+#endif
+
 	for (i = 0; i < alt_name_count; i++) {
 		GENERAL_NAME *san = sk_GENERAL_NAME_value(alt_names, i);
 
@@ -464,7 +498,7 @@ static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /
 			OPENSSL_free(cert_name);
 		} else if (san->type == GEN_IPADD) {
 			if (san->d.iPAddress->length == 4) {
-				sprintf(ipbuffer, "%d.%d.%d.%d",
+				snprintf(ipbuffer, sizeof(ipbuffer), "%d.%d.%d.%d",
 					san->d.iPAddress->data[0],
 					san->d.iPAddress->data[1],
 					san->d.iPAddress->data[2],
@@ -476,10 +510,17 @@ static bool php_openssl_matches_san_list(X509 *peer, const char *subject_name) /
 					return 1;
 				}
 			}
-			/* No, we aren't bothering to check IPv6 addresses. Why?
-			 * Because IP SAN names are officially deprecated and are
-			 * not allowed by CAs starting in 2015. Deal with it.
-			 */
+#ifdef HAVE_IPV6_SAN
+			else if (san->d.ip->length == 16 && subject_name_is_ipv6) {
+				ipbuffer[0] = 0;
+				EXPAND_IPV6_ADDRESS(ipbuffer, san->d.iPAddress->data);
+				if (strcasecmp((const char*)subject_name_ipv6_expanded, (const char*)ipbuffer) == 0) {
+					sk_GENERAL_NAME_pop_free(alt_names, GENERAL_NAME_free);
+
+					return 1;
+				}
+			}
+#endif
 		}
 	}
 
@@ -515,7 +556,7 @@ static bool php_openssl_matches_common_name(X509 *peer, const char *subject_name
 }
 /* }}} */
 
-static int php_openssl_apply_peer_verification_policy(SSL *ssl, X509 *peer, php_stream *stream) /* {{{ */
+static zend_result php_openssl_apply_peer_verification_policy(SSL *ssl, X509 *peer, php_stream *stream) /* {{{ */
 {
 	zval *val = NULL;
 	zval *peer_fingerprint;
@@ -635,11 +676,7 @@ static int php_openssl_win_cert_verify_callback(X509_STORE_CTX *x509_store_ctx, 
 {
 	PCCERT_CONTEXT cert_ctx = NULL;
 	PCCERT_CHAIN_CONTEXT cert_chain_ctx = NULL;
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-	X509 *cert = x509_store_ctx->cert;
-#else
 	X509 *cert = X509_STORE_CTX_get0_cert(x509_store_ctx);
-#endif
 
 	php_stream *stream;
 	php_openssl_netstream_data_t *sslsock;
@@ -663,7 +700,7 @@ static int php_openssl_win_cert_verify_callback(X509_STORE_CTX *x509_store_ctx, 
 				err_code = e;
 			}
 
-			php_error_docref(NULL, E_WARNING, "Error encoding X509 certificate: %d: %s", err_code, ERR_error_string(err_code, err_buf));
+			php_error_docref(NULL, E_WARNING, "Error encoding X509 certificate: %lu: %s", err_code, ERR_error_string(err_code, err_buf));
 			RETURN_CERT_VERIFY_FAILURE(SSL_R_CERTIFICATE_VERIFY_FAILED);
 		}
 
@@ -842,7 +879,7 @@ static long php_openssl_load_stream_cafile(X509_STORE *cert_store, const char *c
 }
 /* }}} */
 
-static int php_openssl_enable_peer_verification(SSL_CTX *ctx, php_stream *stream) /* {{{ */
+static zend_result php_openssl_enable_peer_verification(SSL_CTX *ctx, php_stream *stream) /* {{{ */
 {
 	zval *val = NULL;
 	char *cafile = NULL;
@@ -902,7 +939,7 @@ static void php_openssl_disable_peer_verification(SSL_CTX *ctx, php_stream *stre
 }
 /* }}} */
 
-static int php_openssl_set_local_cert(SSL_CTX *ctx, php_stream *stream) /* {{{ */
+static zend_result php_openssl_set_local_cert(SSL_CTX *ctx, php_stream *stream) /* {{{ */
 {
 	zval *val = NULL;
 	char *certfile = NULL;
@@ -1206,7 +1243,7 @@ static RSA *php_openssl_tmp_rsa_cb(SSL *s, int is_export, int keylength)
 }
 #endif
 
-static int php_openssl_set_server_dh_param(php_stream * stream, SSL_CTX *ctx) /* {{{ */
+static zend_result php_openssl_set_server_dh_param(php_stream * stream, SSL_CTX *ctx) /* {{{ */
 {
 	zval *zdhpath = php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), "ssl", "dh_param");
 	if (zdhpath == NULL) {
@@ -1239,7 +1276,7 @@ static int php_openssl_set_server_dh_param(php_stream * stream, SSL_CTX *ctx) /*
 		return FAILURE;
 	}
 
-	if (SSL_CTX_set0_tmp_dh_pkey(ctx, pkey) < 0) {
+	if (SSL_CTX_set0_tmp_dh_pkey(ctx, pkey) == 0) {
 		php_error_docref(NULL, E_WARNING, "Failed assigning DH params");
 		EVP_PKEY_free(pkey);
 		return FAILURE;
@@ -1253,7 +1290,7 @@ static int php_openssl_set_server_dh_param(php_stream * stream, SSL_CTX *ctx) /*
 		return FAILURE;
 	}
 
-	if (SSL_CTX_set_tmp_dh(ctx, dh) < 0) {
+	if (SSL_CTX_set_tmp_dh(ctx, dh) == 0) {
 		php_error_docref(NULL, E_WARNING, "Failed assigning DH params");
 		DH_free(dh);
 		return FAILURE;
@@ -1267,7 +1304,7 @@ static int php_openssl_set_server_dh_param(php_stream * stream, SSL_CTX *ctx) /*
 /* }}} */
 
 #if defined(HAVE_ECDH) && PHP_OPENSSL_API_VERSION < 0x10100
-static int php_openssl_set_server_ecdh_curve(php_stream *stream, SSL_CTX *ctx) /* {{{ */
+static zend_result php_openssl_set_server_ecdh_curve(php_stream *stream, SSL_CTX *ctx) /* {{{ */
 {
 	zval *zvcurve;
 	int curve_nid;
@@ -1303,7 +1340,7 @@ static int php_openssl_set_server_ecdh_curve(php_stream *stream, SSL_CTX *ctx) /
 /* }}} */
 #endif
 
-static int php_openssl_set_server_specific_opts(php_stream *stream, SSL_CTX *ctx) /* {{{ */
+static zend_result php_openssl_set_server_specific_opts(php_stream *stream, SSL_CTX *ctx) /* {{{ */
 {
 	zval *zv;
 	long ssl_ctx_options = SSL_CTX_get_options(ctx);
@@ -1322,7 +1359,10 @@ static int php_openssl_set_server_specific_opts(php_stream *stream, SSL_CTX *ctx
 		php_error_docref(NULL, E_WARNING, "rsa_key_size context option has been removed");
 	}
 
-	php_openssl_set_server_dh_param(stream, ctx);
+	if (php_openssl_set_server_dh_param(stream, ctx) == FAILURE) {
+		return FAILURE;
+	}
+
 	zv = php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), "ssl", "single_dh_use");
 	if (zv == NULL || zend_is_true(zv)) {
 		ssl_ctx_options |= SSL_OP_SINGLE_DH_USE;
@@ -1399,7 +1439,7 @@ static SSL_CTX *php_openssl_create_sni_server_ctx(char *cert_path, char *key_pat
 }
 /* }}} */
 
-static int php_openssl_enable_server_sni(php_stream *stream, php_openssl_netstream_data_t *sslsock)  /* {{{ */
+static zend_result php_openssl_enable_server_sni(php_stream *stream, php_openssl_netstream_data_t *sslsock)  /* {{{ */
 {
 	zval *val;
 	zval *current;
@@ -1610,7 +1650,7 @@ static int php_openssl_server_alpn_callback(SSL *ssl_handle,
 
 #endif
 
-int php_openssl_setup_crypto(php_stream *stream,
+static zend_result php_openssl_setup_crypto(php_stream *stream,
 		php_openssl_netstream_data_t *sslsock,
 		php_stream_xport_crypto_param *cparam) /* {{{ */
 {
@@ -1635,7 +1675,7 @@ int php_openssl_setup_crypto(php_stream *stream,
 	ERR_clear_error();
 
 	/* We need to do slightly different things based on client/server method
-	 * so lets remember which method was selected */
+	 * so let's remember which method was selected */
 	sslsock->is_client = cparam->inputs.method & STREAM_CRYPTO_IS_CLIENT;
 	method_flags = cparam->inputs.method & ~STREAM_CRYPTO_IS_CLIENT;
 
@@ -2428,29 +2468,127 @@ static int php_openssl_sockop_set_option(php_stream *stream, int option, int val
 
 				if (sslsock->s.socket == -1) {
 					alive = 0;
-				} else if ((!sslsock->ssl_active && value == 0 && ((MSG_DONTWAIT != 0) || !sslsock->s.is_blocked)) ||
-					   php_pollfd_for(sslsock->s.socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0) {
+				} else if (
+					(
+						!sslsock->ssl_active &&
+						value == 0 &&
+						!(stream->flags & PHP_STREAM_FLAG_NO_IO) &&
+						((MSG_DONTWAIT != 0) || !sslsock->s.is_blocked)
+					) ||
+					php_pollfd_for(sslsock->s.socket, PHP_POLLREADABLE|POLLPRI, &tv) > 0
+				) {
 					/* the poll() call was skipped if the socket is non-blocking (or MSG_DONTWAIT is available) and if the timeout is zero */
 					/* additionally, we don't use this optimization if SSL is active because in that case, we're not using MSG_DONTWAIT */
 					if (sslsock->ssl_active) {
-						int n = SSL_peek(sslsock->ssl_handle, &buf, sizeof(buf));
-						if (n <= 0) {
-							int err = SSL_get_error(sslsock->ssl_handle, n);
-							switch (err) {
-								case SSL_ERROR_SYSCALL:
-									alive = php_socket_errno() == EAGAIN;
+						int retry = 1;
+						struct timeval start_time;
+						struct timeval *timeout = NULL;
+						int began_blocked = sslsock->s.is_blocked;
+						int has_timeout = 0;
+
+						/* never use a timeout with non-blocking sockets */
+						if (began_blocked) {
+							timeout = &tv;
+						}
+
+						if (timeout && php_set_sock_blocking(sslsock->s.socket, 0) == SUCCESS) {
+							sslsock->s.is_blocked = 0;
+						}
+
+						if (!sslsock->s.is_blocked && timeout && (timeout->tv_sec > 0 || (timeout->tv_sec == 0 && timeout->tv_usec))) {
+							has_timeout = 1;
+							/* gettimeofday is not monotonic; using it here is not strictly correct */
+							gettimeofday(&start_time, NULL);
+						}
+
+						/* Main IO loop. */
+						do {
+							struct timeval cur_time, elapsed_time, left_time;
+
+							/* If we have a timeout to check, figure out how much time has elapsed since we started. */
+							if (has_timeout) {
+								gettimeofday(&cur_time, NULL);
+
+								/* Determine how much time we've taken so far. */
+								elapsed_time = php_openssl_subtract_timeval(cur_time, start_time);
+
+								/* and return an error if we've taken too long. */
+								if (php_openssl_compare_timeval(elapsed_time, *timeout) > 0 ) {
+									/* If the socket was originally blocking, set it back. */
+									if (began_blocked) {
+										php_set_sock_blocking(sslsock->s.socket, 1);
+										sslsock->s.is_blocked = 1;
+									}
+									sslsock->s.timeout_event = 1;
+									return PHP_STREAM_OPTION_RETURN_ERR;
+								}
+							}
+
+							int n = SSL_peek(sslsock->ssl_handle, &buf, sizeof(buf));
+							/* If we didn't do anything on the last loop (or an error) check to see if we should retry or exit. */
+							if (n <= 0) {
+								/* Now, do the IO operation. Don't block if we can't complete... */
+								int err = SSL_get_error(sslsock->ssl_handle, n);
+								switch (err) {
+									case SSL_ERROR_SYSCALL:
+										retry = php_socket_errno() == EAGAIN;
+										break;
+									case SSL_ERROR_WANT_READ:
+									case SSL_ERROR_WANT_WRITE:
+										retry = 1;
+										break;
+									default:
+										/* any other problem is a fatal error */
+										retry = 0;
+								}
+
+								/* Don't loop indefinitely in non-blocking mode if no data is available */
+								if (began_blocked == 0 || !has_timeout) {
+									alive = retry;
 									break;
-								case SSL_ERROR_WANT_READ:
-								case SSL_ERROR_WANT_WRITE:
-									alive = 1;
-									break;
-								default:
-									/* any other problem is a fatal error */
-									alive = 0;
+								}
+
+								/* Now, if we have to wait some time, and we're supposed to be blocking, wait for the socket to become
+								* available. Now, php_pollfd_for uses select to wait up to our time_left value only...
+								*/
+								if (retry) {
+									/* Now, how much time until we time out? */
+									left_time = php_openssl_subtract_timeval(*timeout, elapsed_time);
+									if (php_pollfd_for(sslsock->s.socket, PHP_POLLREADABLE|POLLPRI|POLLOUT, has_timeout ? &left_time : NULL) <= 0) {
+										retry = 0;
+										alive = 0;
+									};
+								}
+							} else {
+								retry = 0;
+								alive = 1;
+							}
+							/* Finally, we keep going until there are any data or there is no time to wait. */
+						} while (retry);
+
+						if (began_blocked && !sslsock->s.is_blocked) {
+							// Set it back to blocking
+							php_set_sock_blocking(sslsock->s.socket, 1);
+							sslsock->s.is_blocked = 1;
+						}
+					} else {
+#ifdef PHP_WIN32
+						int ret;
+#else
+						ssize_t ret;
+#endif
+
+						ret = recv(sslsock->s.socket, &buf, sizeof(buf), MSG_PEEK|MSG_DONTWAIT);
+						if (0 == ret) {
+							/* the counterpart did properly shutdown */
+							alive = 0;
+						} else if (0 > ret) {
+							int err = php_socket_errno();
+							if (err != EWOULDBLOCK && err != EMSGSIZE && err != EAGAIN) {
+								/* there was an unrecoverable error */
+								alive = 0;
 							}
 						}
-					} else if (0 == recv(sslsock->s.socket, &buf, sizeof(buf), MSG_PEEK|MSG_DONTWAIT) && php_socket_errno() != EAGAIN) {
-						alive = 0;
 					}
 				}
 				return alive ? PHP_STREAM_OPTION_RETURN_OK : PHP_STREAM_OPTION_RETURN_ERR;
@@ -2563,7 +2701,7 @@ static int php_openssl_sockop_cast(php_stream *stream, int castas, void **ret)  
 }
 /* }}} */
 
-const php_stream_ops php_openssl_socket_ops = {
+static const php_stream_ops php_openssl_socket_ops = {
 	php_openssl_sockop_write, php_openssl_sockop_read,
 	php_openssl_sockop_close, php_openssl_sockop_flush,
 	"tcp_socket/ssl",

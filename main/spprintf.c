@@ -75,8 +75,7 @@
 #ifndef _GNU_SOURCE
 # define _GNU_SOURCE
 #endif
-#include "spprintf.h"
-#include "zend_strtod.h"
+#include "php.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -175,13 +174,6 @@
 } while (0)
 
 /* }}} */
-
-#if !HAVE_STRNLEN
-static size_t strnlen(const char *s, size_t maxlen) {
-	char *r = memchr(s, '\0', maxlen);
-	return r ? r-s : maxlen;
-}
-#endif
 
 /*
  * Do format conversion placing the output in buffer
@@ -379,6 +371,15 @@ static void xbuf_format_converter(void *xbuf, bool is_char, const char *fmt, va_
 					}
 					break;
 				}
+				case 'S': {
+					zend_string *str = va_arg(ap, zend_string*);
+					s_len = ZSTR_LEN(str);
+					s = ZSTR_VAL(str);
+					if (adjust_precision && (size_t)precision < s_len) {
+						s_len = precision;
+					}
+					break;
+				}
 				case 'u':
 					switch(modifier) {
 						default:
@@ -553,7 +554,7 @@ static void xbuf_format_converter(void *xbuf, bool is_char, const char *fmt, va_
 						if (!adjust_precision) {
 							s_len = strlen(s);
 						} else {
-							s_len = strnlen(s, precision);
+							s_len = zend_strnlen(s, precision);
 						}
 					} else {
 						s = S_NULL;

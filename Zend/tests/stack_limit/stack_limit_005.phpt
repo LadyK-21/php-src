@@ -1,5 +1,9 @@
 --TEST--
 Stack limit 005 - Internal stack limit check in zend_compile_expr()
+--SKIPIF--
+<?php
+if (!function_exists('zend_test_zend_call_stack_get')) die("skip zend_test_zend_call_stack_get() is not available");
+?>
 --EXTENSIONS--
 zend_test
 --INI--
@@ -60,5 +64,6 @@ $test
     ->f()->f()->f()->f()->f()->f()->f()->f()->f()->f()
 ;
 
+?>
 --EXPECTF--
-Fatal error: Maximum call stack size of %d bytes reached during compilation. Try splitting expression in %s on line %d
+Fatal error: Maximum call stack size of %d bytes (zend.max_allowed_stack_size - zend.reserved_stack_size) reached during compilation. Try splitting expression in %s on line %d

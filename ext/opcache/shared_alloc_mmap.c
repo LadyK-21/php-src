@@ -20,6 +20,9 @@
 */
 
 #include "zend_shared_alloc.h"
+#ifdef HAVE_JIT
+# include "jit/zend_jit.h"
+#endif
 
 #ifdef USE_MMAP
 
@@ -34,7 +37,7 @@
 #endif
 
 #include "zend_execute.h"
-#ifdef HAVE_SYS_PROCCTL_H
+#ifdef HAVE_PROCCTL
 #include <sys/procctl.h>
 #endif
 
@@ -48,11 +51,11 @@
 # define MAP_HUGETLB MAP_ALIGNED_SUPER
 #endif
 
-#if (defined(__linux__) || defined(__FreeBSD__)) && (defined(__x86_64__) || defined (__aarch64__))
+#if defined(HAVE_JIT) && (defined(__linux__) || defined(__FreeBSD__)) && (defined(__x86_64__) || defined (__aarch64__)) && !defined(__SANITIZE_ADDRESS__)
 static void *find_prefered_mmap_base(size_t requested_size)
 {
 	size_t huge_page_size = 2 * 1024 * 1024;
-	uintptr_t last_free_addr = 0;
+	uintptr_t last_free_addr = huge_page_size;
 	uintptr_t last_candidate = (uintptr_t)MAP_FAILED;
 	uintptr_t start, end, text_start = 0;
 #if defined(__linux__)
@@ -65,10 +68,27 @@ static void *find_prefered_mmap_base(size_t requested_size)
 	}
 
 	while (fgets(buffer, MAXPATHLEN, f) && sscanf(buffer, "%lx-%lx", &start, &end) == 2) {
+		/* Don't place the segment directly before or after the heap segment. Due to an selinux bug,
+		 * a segment directly preceding or following the heap is interpreted as heap memory, which
+		 * will result in an execheap violation for the JIT.
+		 * See https://bugzilla.kernel.org/show_bug.cgi?id=218258. */
+		bool heap_segment = strstr(buffer, "[heap]") != NULL;
+		if (heap_segment) {
+			uintptr_t start_base = start & ~(huge_page_size - 1);
+			if (last_free_addr + requested_size >= start_base) {
+				last_free_addr = ZEND_MM_ALIGNED_SIZE_EX(end + huge_page_size, huge_page_size);
+				continue;
+			}
+		}
 		if ((uintptr_t)execute_ex >= start) {
 			/* the current segment lays before PHP .text segment or PHP .text segment itself */
+			/*Search for candidates at the end of the free segment near the .text segment
+			  to prevent candidates from being missed due to large hole*/
 			if (last_free_addr + requested_size <= start) {
-				last_candidate = last_free_addr;
+				last_candidate = ZEND_MM_ALIGNED_SIZE_EX(start - requested_size, huge_page_size);
+				if (last_candidate + requested_size > start) {
+					last_candidate -= huge_page_size;
+				}
 			}
 			if ((uintptr_t)execute_ex < end) {
 				/* the current segment is PHP .text segment itself */
@@ -93,7 +113,9 @@ static void *find_prefered_mmap_base(size_t requested_size)
 			}
 		}
 		last_free_addr = ZEND_MM_ALIGNED_SIZE_EX(end, huge_page_size);
-
+		if (heap_segment) {
+			last_free_addr += huge_page_size;
+		}
 	}
 	fclose(f);
 #elif defined(__FreeBSD__)
@@ -117,7 +139,10 @@ static void *find_prefered_mmap_base(size_t requested_size)
 					if ((uintptr_t)execute_ex >= e_start) {
 						/* the current segment lays before PHP .text segment or PHP .text segment itself */
 						if (last_free_addr + requested_size <= e_start) {
-							last_candidate = last_free_addr;
+							last_candidate = ZEND_MM_ALIGNED_SIZE_EX(e_start - requested_size, huge_page_size);
+							if (last_candidate + requested_size > e_start) {
+								last_candidate -= huge_page_size;
+							}
 						}
 						if ((uintptr_t)execute_ex < e_end) {
 							/* the current segment is PHP .text segment itself */
@@ -154,7 +179,7 @@ static void *find_prefered_mmap_base(size_t requested_size)
 }
 #endif
 
-static int create_segments(size_t requested_size, zend_shared_segment ***shared_segments_p, int *shared_segments_count, char **error_in)
+static int create_segments(size_t requested_size, zend_shared_segment ***shared_segments_p, int *shared_segments_count, const char **error_in)
 {
 	zend_shared_segment *shared_segment;
 	int flags = PROT_READ | PROT_WRITE, fd = -1;
@@ -175,11 +200,17 @@ static int create_segments(size_t requested_size, zend_shared_segment ***shared_
 #ifdef PROT_MAX
 	flags |= PROT_MAX(PROT_READ | PROT_WRITE | PROT_EXEC);
 #endif
-#ifdef MAP_JIT
-	flags |= MAP_JIT;
-#endif
-#if (defined(__linux__) || defined(__FreeBSD__)) && (defined(__x86_64__) || defined (__aarch64__))
-	void *hint = find_prefered_mmap_base(requested_size);
+#if defined(HAVE_JIT) && (defined(__linux__) || defined(__FreeBSD__)) && (defined(__x86_64__) || defined (__aarch64__)) && !defined(__SANITIZE_ADDRESS__)
+	void *hint;
+	if (JIT_G(enabled) && JIT_G(buffer_size)
+			&& zend_jit_check_support() == SUCCESS) {
+		hint = find_prefered_mmap_base(requested_size);
+	} else {
+		/* Do not use a hint if JIT is not enabled, as this profits only JIT and
+		 * this is potentially unsafe when the only suitable candidate is just
+		 * after the heap (e.g. in non-PIE builds) (GH-13775). */
+		hint = MAP_FAILED;
+	}
 	if (hint != MAP_FAILED) {
 # ifdef MAP_HUGETLB
 		size_t huge_page_size = 2 * 1024 * 1024;
@@ -276,7 +307,7 @@ static size_t segment_type_size(void)
 	return sizeof(zend_shared_segment);
 }
 
-zend_shared_memory_handlers zend_alloc_mmap_handlers = {
+const zend_shared_memory_handlers zend_alloc_mmap_handlers = {
 	create_segments,
 	detach_segment,
 	segment_type_size

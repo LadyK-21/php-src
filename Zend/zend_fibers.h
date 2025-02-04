@@ -20,17 +20,13 @@
 #ifndef ZEND_FIBERS_H
 #define ZEND_FIBERS_H
 
-#include "zend_API.h" // for struct zend_fcall_info
-#include "zend_portability.h" // for BEGIN_EXTERN_C
-
-#include <stddef.h>
+#include "zend_API.h"
+#include "zend_types.h"
 
 #define ZEND_FIBER_GUARD_PAGES 1
 
 #define ZEND_FIBER_DEFAULT_C_STACK_SIZE (4096 * (((sizeof(void *)) < 8) ? 256 : 512))
 #define ZEND_FIBER_VM_STACK_SIZE (1024 * sizeof(zval))
-
-typedef struct _zend_fiber_context zend_fiber_context;
 
 BEGIN_EXTERN_C()
 
@@ -136,8 +132,12 @@ struct _zend_fiber {
 	zval result;
 };
 
+ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value);
+ZEND_API void zend_fiber_resume(zend_fiber *fiber, zval *value, zval *return_value);
+ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_value);
+
 /* These functions may be used to create custom fiber objects using the bundled fiber switching context. */
-ZEND_API bool zend_fiber_init_context(zend_fiber_context *context, void *kind, zend_fiber_coroutine coroutine, size_t stack_size);
+ZEND_API zend_result zend_fiber_init_context(zend_fiber_context *context, void *kind, zend_fiber_coroutine coroutine, size_t stack_size);
 ZEND_API void zend_fiber_destroy_context(zend_fiber_context *context);
 ZEND_API void zend_fiber_switch_context(zend_fiber_transfer *transfer);
 #ifdef ZEND_CHECK_STACK_LIMIT

@@ -15,12 +15,10 @@
 */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "phpdbg_io.h"
-
-#include <errno.h>
 
 ZEND_EXTERN_MODULE_GLOBALS(phpdbg)
 

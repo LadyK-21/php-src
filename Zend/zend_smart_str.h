@@ -17,14 +17,9 @@
 #ifndef ZEND_SMART_STR_H
 #define ZEND_SMART_STR_H
 
+#include <zend.h>
+#include "zend_globals.h"
 #include "zend_smart_str_public.h"
-
-#include "zend_operators.h" // for zend_print_long_to_buf()
-#include "zend_portability.h" // for BEGIN_EXTERN_C
-#include "zend_string.h"
-
-// forward declarations
-typedef struct _zval_struct zval;
 
 BEGIN_EXTERN_C()
 
@@ -39,6 +34,7 @@ ZEND_API void smart_str_append_printf(smart_str *dest, const char *format, ...)
 	ZEND_ATTRIBUTE_FORMAT(printf, 2, 3);
 ZEND_API void ZEND_FASTCALL smart_str_append_escaped_truncated(smart_str *str, const zend_string *value, size_t length);
 ZEND_API void ZEND_FASTCALL smart_str_append_scalar(smart_str *str, const zval *value, size_t truncate);
+ZEND_API zend_result ZEND_FASTCALL smart_str_append_zval(smart_str *dest, const zval *value, size_t truncate);
 END_EXTERN_C()
 
 static zend_always_inline size_t smart_str_alloc(smart_str *str, size_t len, bool persistent) {

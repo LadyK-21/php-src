@@ -57,8 +57,10 @@ const GMP_BIG_ENDIAN = UNKNOWN;
  */
 const GMP_NATIVE_ENDIAN = UNKNOWN;
 
-class GMP
+final class GMP
 {
+    public function __construct(int|string $num = 0, int $base = 0) {}
+
     public function __serialize(): array {}
 
     public function __unserialize(array $data): void {}

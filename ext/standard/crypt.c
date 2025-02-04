@@ -43,7 +43,6 @@
 #endif
 
 #include "php_crypt.h"
-#include "ext/random/php_random.h"
 
 /* Used to check DES salts to ensure that they contain only valid characters */
 #define IS_VALID_SALT_CHARACTER(c) (((c) >= '.' && (c) <= '9') || ((c) >= 'A' && (c) <= 'Z') || ((c) >= 'a' && (c) <= 'z'))
@@ -124,6 +123,7 @@ PHPAPI zend_string *php_crypt(const char *password, const int pass_len, const ch
 		} else if (
 				salt[0] == '$' &&
 				salt[1] == '2' &&
+				salt[2] != 0 &&
 				salt[3] == '$') {
 			char output[PHP_MAX_SALT_LEN + 1];
 
@@ -177,7 +177,19 @@ PHPAPI zend_string *php_crypt(const char *password, const int pass_len, const ch
 
 	if (!crypt_res || (salt[0] == '*' && salt[1] == '0')) {
 		return NULL;
-	} else {
+	}
+	else if (!strcmp(crypt_res, "*")) {
+		/* Musl crypt() uses "*" as a failure token rather
+		 * than the "*0" that libxcrypt/PHP use. Our test
+		 * suite in particular looks for "*0" in a few places,
+		 * and it would be annoying to handle both values
+		 * explicitly. It seems wise to abstract this detail
+		 * from the end user: if it's annoying for us, imagine
+		 * how annoying it would be in end-user code; not that
+		 * anyone would think of it. */
+		return NULL;
+	}
+	else {
 		result = zend_string_init(crypt_res, strlen(crypt_res), 0);
 		return result;
 	}

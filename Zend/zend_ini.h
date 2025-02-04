@@ -19,23 +19,13 @@
 #ifndef ZEND_INI_H
 #define ZEND_INI_H
 
-#include "zend_portability.h" // for BEGIN_EXTERN_C
-#include "zend_types.h" // for zend_result
-
-#include <stdint.h>
+#include "zend_modules.h"
 
 #define ZEND_INI_USER	(1<<0)
 #define ZEND_INI_PERDIR	(1<<1)
 #define ZEND_INI_SYSTEM	(1<<2)
 
 #define ZEND_INI_ALL (ZEND_INI_USER|ZEND_INI_PERDIR|ZEND_INI_SYSTEM)
-
-// forward declarations
-typedef struct _zend_file_handle zend_file_handle;
-typedef struct _zend_ini_entry zend_ini_entry;
-typedef struct _zend_module_entry zend_module_entry;
-typedef struct _zend_string zend_string;
-typedef struct _zend_array HashTable;
 
 #define ZEND_INI_MH(name) int name(zend_ini_entry *entry, zend_string *new_value, void *mh_arg1, void *mh_arg2, void *mh_arg3, int stage)
 #define ZEND_INI_DISP(name) ZEND_COLD void name(zend_ini_entry *ini_entry, int type)
@@ -99,6 +89,8 @@ ZEND_API zend_long zend_ini_long(const char *name, size_t name_length, int orig)
 ZEND_API double zend_ini_double(const char *name, size_t name_length, int orig);
 ZEND_API char *zend_ini_string(const char *name, size_t name_length, int orig);
 ZEND_API char *zend_ini_string_ex(const char *name, size_t name_length, int orig, bool *exists);
+ZEND_API zend_string *zend_ini_str(const char *name, size_t name_length, bool orig);
+ZEND_API zend_string *zend_ini_str_ex(const char *name, size_t name_length, bool orig, bool *exists);
 ZEND_API zend_string *zend_ini_get_value(zend_string *name);
 ZEND_API bool zend_ini_parse_bool(zend_string *str);
 
@@ -244,8 +236,8 @@ END_EXTERN_C()
 /* INI parsing engine */
 typedef void (*zend_ini_parser_cb_t)(zval *arg1, zval *arg2, zval *arg3, int callback_type, void *arg);
 BEGIN_EXTERN_C()
-ZEND_API int zend_parse_ini_file(zend_file_handle *fh, bool unbuffered_errors, int scanner_mode, zend_ini_parser_cb_t ini_parser_cb, void *arg);
-ZEND_API int zend_parse_ini_string(const char *str, bool unbuffered_errors, int scanner_mode, zend_ini_parser_cb_t ini_parser_cb, void *arg);
+ZEND_API zend_result zend_parse_ini_file(zend_file_handle *fh, bool unbuffered_errors, int scanner_mode, zend_ini_parser_cb_t ini_parser_cb, void *arg);
+ZEND_API zend_result zend_parse_ini_string(const char *str, bool unbuffered_errors, int scanner_mode, zend_ini_parser_cb_t ini_parser_cb, void *arg);
 END_EXTERN_C()
 
 /* INI entries */

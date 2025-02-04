@@ -133,6 +133,11 @@ const XML_OPTION_SKIP_TAGSTART = UNKNOWN;
  * @cvalue PHP_XML_OPTION_SKIP_WHITE
  */
 const XML_OPTION_SKIP_WHITE = UNKNOWN;
+/**
+ * @var int
+ * @cvalue PHP_XML_OPTION_PARSE_HUGE
+ */
+const XML_OPTION_PARSE_HUGE = UNKNOWN;
 
 /**
  * @var string
@@ -144,37 +149,26 @@ function xml_parser_create(?string $encoding = null): XMLParser {}
 
 function xml_parser_create_ns(?string $encoding = null, string $separator = ":"): XMLParser {}
 
+#[\Deprecated(since: '8.4', message: 'provide a proper method callable to xml_set_*_handler() functions')]
 function xml_set_object(XMLParser $parser, object $object): true {}
 
-/**
- * @param callable $start_handler
- * @param callable $end_handler
- */
-function xml_set_element_handler(XMLParser $parser, $start_handler, $end_handler): true {}
+function xml_set_element_handler(XMLParser $parser, callable|string|null $start_handler, callable|string|null $end_handler): true {}
 
-/** @param callable $handler */
-function xml_set_character_data_handler(XMLParser $parser, $handler): true {}
+function xml_set_character_data_handler(XMLParser $parser, callable|string|null $handler): true {}
 
-/** @param callable $handler */
-function xml_set_processing_instruction_handler(XMLParser $parser, $handler): true {}
+function xml_set_processing_instruction_handler(XMLParser $parser, callable|string|null $handler): true {}
 
-/** @param callable $handler */
-function xml_set_default_handler(XMLParser $parser, $handler): true {}
+function xml_set_default_handler(XMLParser $parser, callable|string|null $handler): true {}
 
-/** @param callable $handler */
-function xml_set_unparsed_entity_decl_handler(XMLParser $parser, $handler): true {}
+function xml_set_unparsed_entity_decl_handler(XMLParser $parser, callable|string|null $handler): true {}
 
-/** @param callable $handler */
-function xml_set_notation_decl_handler(XMLParser $parser, $handler): true {}
+function xml_set_notation_decl_handler(XMLParser $parser, callable|string|null $handler): true {}
 
-/** @param callable $handler */
-function xml_set_external_entity_ref_handler(XMLParser $parser, $handler): true {}
+function xml_set_external_entity_ref_handler(XMLParser $parser, callable|string|null $handler): true {}
 
-/** @param callable $handler */
-function xml_set_start_namespace_decl_handler(XMLParser $parser, $handler): true {}
+function xml_set_start_namespace_decl_handler(XMLParser $parser, callable|string|null $handler): true {}
 
-/** @param callable $handler */
-function xml_set_end_namespace_decl_handler(XMLParser $parser, $handler): true {}
+function xml_set_end_namespace_decl_handler(XMLParser $parser, callable|string|null $handler): true {}
 
 function xml_parse(XMLParser $parser, string $data, bool $is_final = false): int {}
 
@@ -182,7 +176,7 @@ function xml_parse(XMLParser $parser, string $data, bool $is_final = false): int
  * @param array $values
  * @param array $index
  */
-function xml_parse_into_struct(XMLParser $parser, string $data, &$values, &$index = null): int {}
+function xml_parse_into_struct(XMLParser $parser, string $data, &$values, &$index = null): int|false {}
 
 function xml_get_error_code(XMLParser $parser): int {}
 
@@ -197,11 +191,11 @@ function xml_get_current_byte_index(XMLParser $parser): int {}
 
 function xml_parser_free(XMLParser $parser): bool {}
 
-/** @param string|int $value */
+/** @param string|int|bool $value */
 function xml_parser_set_option(XMLParser $parser, int $option, $value): bool {}
 
 /** @refcount 1 */
-function xml_parser_get_option(XMLParser $parser, int $option): string|int {}
+function xml_parser_get_option(XMLParser $parser, int $option): string|int|bool {}
 
 /**
  * @strict-properties

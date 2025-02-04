@@ -177,7 +177,7 @@ PHPAPI int php_load_extension(const char *filename, int type, int start_now)
 
 #ifdef PHP_WIN32
 	if (!php_win32_image_compatible(handle, &err1)) {
-			php_error_docref(NULL, error_type, err1);
+			php_error_docref(NULL, error_type, "%s", err1);
 			efree(err1);
 			DL_UNLOAD(handle);
 			return FAILURE;
@@ -230,14 +230,13 @@ PHPAPI int php_load_extension(const char *filename, int type, int start_now)
 		DL_UNLOAD(handle);
 		return FAILURE;
 	}
-	module_entry->type = type;
-	module_entry->module_number = zend_next_free_module();
-	module_entry->handle = handle;
 
-	if ((module_entry = zend_register_module_ex(module_entry)) == NULL) {
+	if ((module_entry = zend_register_module_ex(module_entry, type)) == NULL) {
 		DL_UNLOAD(handle);
 		return FAILURE;
 	}
+
+	module_entry->handle = handle;
 
 	if ((type == MODULE_TEMPORARY || start_now) && zend_startup_module_ex(module_entry) == FAILURE) {
 		DL_UNLOAD(handle);

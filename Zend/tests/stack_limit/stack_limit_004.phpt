@@ -1,5 +1,9 @@
 --TEST--
 Stack limit 004 - Stack limit checks with fixed max_allowed_stack_size (fibers)
+--SKIPIF--
+<?php
+if (!function_exists('zend_test_zend_call_stack_get')) die("skip zend_test_zend_call_stack_get() is not available");
+?>
 --EXTENSIONS--
 zend_test
 --FILE--
@@ -23,12 +27,12 @@ $callback = function (): int {
     throw new \Exception();
 };
 
-ini_set('fiber.stack_size', '400K');
+ini_set('fiber.stack_size', '1M');
 $fiber = new Fiber($callback);
 $fiber->start();
 $depth1 = $fiber->getReturn();
 
-ini_set('fiber.stack_size', '200K');
+ini_set('fiber.stack_size', '512K');
 $fiber = new Fiber($callback);
 $fiber->start();
 $depth2 = $fiber->getReturn();

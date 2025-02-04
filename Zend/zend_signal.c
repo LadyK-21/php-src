@@ -28,14 +28,11 @@
 #ifndef _GNU_SOURCE
 # define _GNU_SOURCE
 #endif
-
-#include "zend_signal.h"
-#include "zend_alloc.h"
-#include "zend.h" // for zend_output_debug_string(), zend_error(), ...
-
-#include <errno.h>
-#include <signal.h>
 #include <string.h>
+
+#include "zend.h"
+#include "zend_globals.h"
+#include <signal.h>
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -65,7 +62,7 @@ ZEND_API zend_signal_globals_t zend_signal_globals;
 #endif
 
 static void zend_signal_handler(int signo, siginfo_t *siginfo, void *context);
-static int zend_signal_register(int signo, void (*handler)(int, siginfo_t*, void*));
+static zend_result zend_signal_register(int signo, void (*handler)(int, siginfo_t*, void*));
 
 #if defined(__CYGWIN__) || defined(__PASE__)
 /* Matches zend_execute_API.c; these platforms don't support ITIMER_PROF. */
@@ -74,7 +71,7 @@ static int zend_signal_register(int signo, void (*handler)(int, siginfo_t*, void
 #define TIMEOUT_SIG SIGPROF
 #endif
 
-static int zend_sigs[] = { TIMEOUT_SIG, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2 };
+static const int zend_sigs[] = { TIMEOUT_SIG, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2 };
 
 #define SA_FLAGS_MASK ~(SA_NODEFER | SA_RESETHAND)
 
@@ -84,22 +81,18 @@ static sigset_t            global_sigmask;
 
 /* {{{ zend_signal_handler_defer
  *  Blocks signals if in critical section */
-void zend_signal_handler_defer(int signo, siginfo_t *siginfo, void *context)
+static void zend_signal_handler_defer(int signo, siginfo_t *siginfo, void *context)
 {
 	int errno_save = errno;
 	zend_signal_queue_t *queue, *qtmp;
 
 #ifdef ZTS
-	/* A signal could hit after TSRM shutdown, in this case globals are already freed. */
-	if (tsrm_is_shutdown()) {
+	/* A signal could hit after TSRM shutdown, in this case globals are already freed.
+	 * Or it could be delivered to a thread that didn't execute PHP yet.
+	 * In the latter case we act as if SIGG(active) is false. */
+	if (tsrm_is_shutdown() || !tsrm_is_managed_thread()) {
 		/* Forward to default handler handler */
 		zend_signal_handler(signo, siginfo, context);
-		return;
-	}
-
-	if (!tsrm_is_managed_thread()) {
-		fprintf(stderr, "zend_signal_handler_defer() called in a thread not managed by PHP. The expected signal handler will not be called. This is probably a bug.\n");
-
 		return;
 	}
 #endif
@@ -189,9 +182,8 @@ static void zend_signal_handler(int signo, siginfo_t *siginfo, void *context)
 	sigset_t sigset;
 	zend_signal_entry_t p_sig;
 #ifdef ZTS
-	if (tsrm_is_shutdown()) {
-		p_sig.flags = 0;
-		p_sig.handler = SIG_DFL;
+	if (tsrm_is_shutdown() || !tsrm_is_managed_thread()) {
+		p_sig = global_orig_handlers[signo-1];
 	} else
 #endif
 	p_sig = SIGG(handlers)[signo-1];

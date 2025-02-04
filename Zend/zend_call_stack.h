@@ -25,10 +25,14 @@
 # include <pthread.h>
 #endif
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 #ifdef ZEND_CHECK_STACK_LIMIT
 
 typedef struct _zend_call_stack {
-	void *base;
+	void *base; /* high address of the stack */
 	size_t max_size;
 } zend_call_stack;
 
@@ -38,9 +42,9 @@ ZEND_API bool zend_call_stack_get(zend_call_stack *stack);
 
 /** Returns an approximation of the current stack position */
 static zend_always_inline void *zend_call_stack_position(void) {
-#ifdef ZEND_WIN32
+#ifdef _MSC_VER
 	return _AddressOfReturnAddress();
-#elif HAVE_BUILTIN_FRAME_ADDRESS
+#elif defined(PHP_HAVE_BUILTIN_FRAME_ADDRESS)
 	return __builtin_frame_address(0);
 #else
 	void *a;
@@ -73,8 +77,14 @@ static inline size_t zend_call_stack_default_size(void)
 #ifdef __linux__
 	return 8 * 1024 * 1024;
 #endif
-#ifdef __FreeBSD__
-	return 8 * 1024 * 1024;
+#if defined(__FreeBSD__) || defined(__NetBSD__)
+	return 4 * 1024 * 1024;
+#endif
+#if defined(__DragonFly__)
+	return 2 * 1024 * 1024;
+#endif
+#ifdef __OpenBSD__
+	return 512 * 1024;
 #endif
 #ifdef __APPLE__
 	// https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/CreatingThreads/CreatingThreads.html
@@ -82,6 +92,12 @@ static inline size_t zend_call_stack_default_size(void)
 		return 8 * 1024 * 1024;
 	}
 	return 512 * 1024;
+#endif
+#ifdef __HAIKU__
+	return 64 * 4096;
+#endif
+#ifdef __sun
+	return 8 * 4096;
 #endif
 
 	return 2 * 1024 * 1024;

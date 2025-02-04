@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 64a40a366b87a96a291de6a474e60c8d98d15da1 */
+ * Stub hash: 3aabd5a5d2db0df15b249a425465ae718c13ab6b */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_gmp_init, 0, 1, GMP, 0)
 	ZEND_ARG_TYPE_MASK(0, num, MAY_BE_LONG|MAY_BE_STRING, NULL)
@@ -184,13 +184,17 @@ ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_gmp_binomial, 0, 2, GMP, 0)
 	ZEND_ARG_TYPE_INFO(0, k, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_class_GMP___construct, 0, 0, 0)
+	ZEND_ARG_TYPE_MASK(0, num, MAY_BE_LONG|MAY_BE_STRING, "0")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, base, IS_LONG, 0, "0")
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_GMP___serialize, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_GMP___unserialize, 0, 1, IS_VOID, 0)
 	ZEND_ARG_TYPE_INFO(0, data, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
-
 
 ZEND_FUNCTION(gmp_init);
 ZEND_FUNCTION(gmp_import);
@@ -242,9 +246,9 @@ ZEND_FUNCTION(gmp_popcount);
 ZEND_FUNCTION(gmp_hamdist);
 ZEND_FUNCTION(gmp_nextprime);
 ZEND_FUNCTION(gmp_binomial);
+ZEND_METHOD(GMP, __construct);
 ZEND_METHOD(GMP, __serialize);
 ZEND_METHOD(GMP, __unserialize);
-
 
 static const zend_function_entry ext_functions[] = {
 	ZEND_FE(gmp_init, arginfo_gmp_init)
@@ -258,7 +262,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(gmp_div_qr, arginfo_gmp_div_qr)
 	ZEND_FE(gmp_div_q, arginfo_gmp_div_q)
 	ZEND_FE(gmp_div_r, arginfo_gmp_div_r)
-	ZEND_FALIAS(gmp_div, gmp_div_q, arginfo_gmp_div)
+	ZEND_RAW_FENTRY("gmp_div", zif_gmp_div_q, arginfo_gmp_div, 0, NULL, NULL)
 	ZEND_FE(gmp_mod, arginfo_gmp_mod)
 	ZEND_FE(gmp_divexact, arginfo_gmp_divexact)
 	ZEND_FE(gmp_neg, arginfo_gmp_neg)
@@ -301,8 +305,8 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE_END
 };
 
-
 static const zend_function_entry class_GMP_methods[] = {
+	ZEND_ME(GMP, __construct, arginfo_class_GMP___construct, ZEND_ACC_PUBLIC)
 	ZEND_ME(GMP, __serialize, arginfo_class_GMP___serialize, ZEND_ACC_PUBLIC)
 	ZEND_ME(GMP, __unserialize, arginfo_class_GMP___unserialize, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
@@ -329,7 +333,7 @@ static zend_class_entry *register_class_GMP(void)
 	zend_class_entry ce, *class_entry;
 
 	INIT_CLASS_ENTRY(ce, "GMP", class_GMP_methods);
-	class_entry = zend_register_internal_class_ex(&ce, NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL);
 
 	return class_entry;
 }

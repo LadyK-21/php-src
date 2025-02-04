@@ -17,10 +17,10 @@
    +----------------------------------------------------------------------+
 */
 
+#include "zend.h"
+#include "zend_compile.h"
+#include "zend_operators.h"
 #include "zend_multibyte.h"
-#include "zend_alloc.h"
-#include "zend_globals.h" // for struct _zend_compiler_globals
-#include "zend_globals_macros.h" // for LANG_SCNG()
 #include "zend_ini.h"
 
 static const zend_encoding *dummy_encoding_fetcher(const char *encoding_name)
@@ -170,7 +170,7 @@ ZEND_API const zend_encoding *zend_multibyte_get_script_encoding(void)
 	return LANG_SCNG(script_encoding);
 }
 
-ZEND_API int zend_multibyte_set_script_encoding(const zend_encoding **encoding_list, size_t encoding_list_size)
+ZEND_API zend_result zend_multibyte_set_script_encoding(const zend_encoding **encoding_list, size_t encoding_list_size)
 {
 	if (CG(script_encoding_list)) {
 		free((char*)CG(script_encoding_list));

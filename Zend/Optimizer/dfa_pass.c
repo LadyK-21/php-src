@@ -325,6 +325,19 @@ static bool opline_supports_assign_contraction(
 		return 0;
 	}
 
+	/* Frameless calls override the return value, but the return value may overlap with the arguments. */
+	switch (opline->opcode) {
+		case ZEND_FRAMELESS_ICALL_3:
+			if ((opline + 1)->op1_type == IS_CV && (opline + 1)->op1.var == cv_var) return 0;
+			ZEND_FALLTHROUGH;
+		case ZEND_FRAMELESS_ICALL_2:
+			if (opline->op2_type == IS_CV && opline->op2.var == cv_var) return 0;
+			ZEND_FALLTHROUGH;
+		case ZEND_FRAMELESS_ICALL_1:
+			if (opline->op1_type == IS_CV && opline->op1.var == cv_var) return 0;
+			return 1;
+	}
+
 	if (opline->opcode == ZEND_DO_ICALL || opline->opcode == ZEND_DO_UCALL
 			|| opline->opcode == ZEND_DO_FCALL || opline->opcode == ZEND_DO_FCALL_BY_NAME) {
 		/* Function calls may dtor the return value after it has already been written -- allow
@@ -652,6 +665,8 @@ static void zend_ssa_replace_control_link(zend_op_array *op_array, zend_ssa *ssa
 			case ZEND_COALESCE:
 			case ZEND_ASSERT_CHECK:
 			case ZEND_JMP_NULL:
+			case ZEND_BIND_INIT_STATIC_OR_JMP:
+			case ZEND_JMP_FRAMELESS:
 				if (ZEND_OP2_JMP_ADDR(opline) == op_array->opcodes + old->start) {
 					ZEND_SET_OP_JMP_ADDR(opline, opline->op2, op_array->opcodes + dst->start);
 				}
@@ -932,38 +947,47 @@ optimize_jmpnz:
 				case ZEND_MATCH:
 					if (opline->op1_type == IS_CONST) {
 						zval *zv = CT_CONSTANT_EX(op_array, opline->op1.constant);
-						zend_uchar type = Z_TYPE_P(zv);
+						uint8_t type = Z_TYPE_P(zv);
 						bool correct_type =
 							(opline->opcode == ZEND_SWITCH_LONG && type == IS_LONG)
 							|| (opline->opcode == ZEND_SWITCH_STRING && type == IS_STRING)
 							|| (opline->opcode == ZEND_MATCH && (type == IS_LONG || type == IS_STRING));
 
-						if (!correct_type) {
+						/* Switch statements have a fallback chain for loose comparison. In those
+						 * cases the SWITCH_* instruction is a NOP. Match does strict comparison and
+						 * thus jumps to the default branch on mismatched types, so we need to
+						 * convert MATCH to a jmp. */
+						if (!correct_type && opline->opcode != ZEND_MATCH) {
 							removed_ops++;
 							MAKE_NOP(opline);
 							opline->extended_value = 0;
 							take_successor_ex(ssa, block_num, block, block->successors[block->successors_count - 1]);
 							goto optimize_nop;
-						} else {
+						}
+
+						uint32_t target;
+						if (correct_type) {
 							HashTable *jmptable = Z_ARRVAL_P(CT_CONSTANT_EX(op_array, opline->op2.constant));
 							zval *jmp_zv = type == IS_LONG
 								? zend_hash_index_find(jmptable, Z_LVAL_P(zv))
 								: zend_hash_find(jmptable, Z_STR_P(zv));
 
-							uint32_t target;
 							if (jmp_zv) {
 								target = ZEND_OFFSET_TO_OPLINE_NUM(op_array, opline, Z_LVAL_P(jmp_zv));
 							} else {
 								target = ZEND_OFFSET_TO_OPLINE_NUM(op_array, opline, opline->extended_value);
 							}
-							opline->opcode = ZEND_JMP;
-							opline->extended_value = 0;
-							SET_UNUSED(opline->op1);
-							ZEND_SET_OP_JMP_ADDR(opline, opline->op1, op_array->opcodes + target);
-							SET_UNUSED(opline->op2);
-							take_successor_ex(ssa, block_num, block, ssa->cfg.map[target]);
-							goto optimize_jmp;
+						} else {
+							ZEND_ASSERT(opline->opcode == ZEND_MATCH);
+							target = ZEND_OFFSET_TO_OPLINE_NUM(op_array, opline, opline->extended_value);
 						}
+						opline->opcode = ZEND_JMP;
+						opline->extended_value = 0;
+						SET_UNUSED(opline->op1);
+						ZEND_SET_OP_JMP_ADDR(opline, opline->op1, op_array->opcodes + target);
+						SET_UNUSED(opline->op2);
+						take_successor_ex(ssa, block_num, block, ssa->cfg.map[target]);
+						goto optimize_jmp;
 					}
 					break;
 				case ZEND_NOP:
@@ -997,7 +1021,7 @@ optimize_nop:
 static bool zend_dfa_try_to_replace_result(zend_op_array *op_array, zend_ssa *ssa, int def, int cv_var)
 {
 	int result_var = ssa->ops[def].result_def;
-	int cv = EX_NUM_TO_VAR(ssa->vars[cv_var].var);
+	uint32_t cv = EX_NUM_TO_VAR(ssa->vars[cv_var].var);
 
 	if (result_var >= 0
 	 && !(ssa->var_info[cv_var].type & MAY_BE_REF)

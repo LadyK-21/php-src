@@ -25,7 +25,6 @@
 #endif
 
 #ifdef PHP_WIN32
-# include "win32/inet.h"
 # include <winsock2.h>
 # include <windows.h>
 # include <Ws2tcpip.h>
@@ -40,7 +39,7 @@
 #undef T_UNSPEC
 #endif
 #ifdef HAVE_ARPA_NAMESER_H
-#ifdef DARWIN
+#ifdef __APPLE__
 # define BIND_8_COMPAT 1
 #endif
 #include <arpa/nameser.h>
@@ -56,9 +55,6 @@ extern void __res_ndestroy(res_state statp);
 #include <dns.h>
 #endif
 #endif
-
-#include <errno.h>
-#include <string.h> // for strerror()
 
 #ifndef MAXHOSTNAMELEN
 #define MAXHOSTNAMELEN 255
@@ -160,7 +156,7 @@ PHP_FUNCTION(gethostbyaddr)
 	hostname = php_gethostbyaddr(addr);
 
 	if (hostname == NULL) {
-#if defined(HAVE_IPV6) && defined(HAVE_INET_PTON)
+#ifdef HAVE_IPV6
 		php_error_docref(NULL, E_WARNING, "Address is not a valid IPv4 or IPv6 address");
 #else
 		php_error_docref(NULL, E_WARNING, "Address is not in a.b.c.d form");
@@ -175,7 +171,7 @@ PHP_FUNCTION(gethostbyaddr)
 /* {{{ php_gethostbyaddr */
 static zend_string *php_gethostbyaddr(char *ip)
 {
-#if defined(HAVE_IPV6) && defined(HAVE_INET_PTON)
+#ifdef HAVE_IPV6
 	struct sockaddr_in sa4;
 	struct sockaddr_in6 sa6;
 	char out[NI_MAXHOST];
@@ -224,6 +220,7 @@ PHP_FUNCTION(gethostbyname)
 {
 	char *hostname;
 	size_t hostname_len;
+	zend_string *ipaddr;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_PATH(hostname, hostname_len)
@@ -235,7 +232,12 @@ PHP_FUNCTION(gethostbyname)
 		RETURN_STRINGL(hostname, hostname_len);
 	}
 
-	RETURN_STR(php_gethostbyname(hostname));
+	if (!(ipaddr = php_gethostbyname(hostname))) {
+		php_error_docref(NULL, E_WARNING, "Host name to ip failed %s", hostname);
+		RETURN_STRINGL(hostname, hostname_len);
+	} else {
+		RETURN_STR(ipaddr);
+	}
 }
 /* }}} */
 
@@ -247,9 +249,7 @@ PHP_FUNCTION(gethostbynamel)
 	struct hostent *hp;
 	struct in_addr in;
 	int i;
-#ifdef HAVE_INET_NTOP
 	char addr4[INET_ADDRSTRLEN];
-#endif
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_PATH(hostname, hostname_len)
@@ -270,6 +270,7 @@ PHP_FUNCTION(gethostbynamel)
 
 	for (i = 0;; i++) {
 		/* On macos h_addr_list entries may be misaligned. */
+		const char *ipaddr;
 		struct in_addr *h_addr_entry; /* Don't call this h_addr, it's a macro! */
 		memcpy(&h_addr_entry, &hp->h_addr_list[i], sizeof(struct in_addr *));
 		if (!h_addr_entry) {
@@ -277,11 +278,13 @@ PHP_FUNCTION(gethostbynamel)
 		}
 
 		in = *h_addr_entry;
-#ifdef HAVE_INET_NTOP
-		add_next_index_string(return_value, inet_ntop(AF_INET, &in, addr4, INET_ADDRSTRLEN));
-#else
-		add_next_index_string(return_value, inet_ntoa(in));
-#endif
+		if (!(ipaddr = inet_ntop(AF_INET, &in, addr4, INET_ADDRSTRLEN))) {
+			/* unlikely regarding (too) long hostname and protocols but checking still */
+			php_error_docref(NULL, E_WARNING, "Host name to ip failed %s", hostname);
+			continue;
+		} else {
+			add_next_index_string(return_value, ipaddr);
+		}
 	}
 }
 /* }}} */
@@ -292,9 +295,7 @@ static zend_string *php_gethostbyname(char *name)
 	struct hostent *hp;
 	struct in_addr *h_addr_0; /* Don't call this h_addr, it's a macro! */
 	struct in_addr in;
-#ifdef HAVE_INET_NTOP
 	char addr4[INET_ADDRSTRLEN];
-#endif
 	const char *address;
 
 	hp = php_network_gethostbyname(name);
@@ -310,11 +311,10 @@ static zend_string *php_gethostbyname(char *name)
 
 	memcpy(&in.s_addr, h_addr_0, sizeof(in.s_addr));
 
-#ifdef HAVE_INET_NTOP
-	address = inet_ntop(AF_INET, &in, addr4, INET_ADDRSTRLEN);
-#else
-	address = inet_ntoa(in);
-#endif
+	if (!(address = inet_ntop(AF_INET, &in, addr4, INET_ADDRSTRLEN))) {
+		return NULL;
+	}
+
 	return zend_string_init(address, strlen(address), 0);
 }
 /* }}} */
@@ -388,7 +388,7 @@ PHP_FUNCTION(dns_check_record)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (hostname_len == 0) {
-		zend_argument_value_error(1, "cannot be empty");
+		zend_argument_must_not_be_empty_error(1);
 		RETURN_THROWS();
 	}
 
@@ -641,7 +641,7 @@ static uint8_t *php_parserr(uint8_t *cp, uint8_t *end, querybuf *answer, int typ
 						tp[0] = ':';
 						tp++;
 					}
-					tp += sprintf((char*)tp,"%x",s);
+					tp += snprintf((char*)tp, sizeof(name) - (tp - (uint8_t *) name), "%x", s);
 				} else {
 					if (!have_v6_break) {
 						have_v6_break = 1;
@@ -686,7 +686,7 @@ static uint8_t *php_parserr(uint8_t *cp, uint8_t *end, querybuf *answer, int typ
 						tp[0] = ':';
 						tp++;
 					}
-					sprintf((char*)tp, "%x", cp[0] & 0xFF);
+					snprintf((char*)tp, sizeof(name) - (tp - (uint8_t *) name), "%x", cp[0] & 0xFF);
 				} else {
 					if (!have_v6_break) {
 						have_v6_break = 1;
@@ -711,7 +711,7 @@ static uint8_t *php_parserr(uint8_t *cp, uint8_t *end, querybuf *answer, int typ
 						tp[0] = ':';
 						tp++;
 					}
-					tp += sprintf((char*)tp,"%x",s);
+					tp += snprintf((char*)tp, sizeof(name) - (tp - (uint8_t *) name),"%x",s);
 				} else {
 					if (!have_v6_break) {
 						have_v6_break = 1;

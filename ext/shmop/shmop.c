@@ -18,12 +18,13 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
-#include "php_ini.h"
 #include "php_shmop.h"
+#include "Zend/zend_attributes.h"
+
 #include "shmop_arginfo.h"
 
 # ifndef PHP_WIN32
@@ -33,12 +34,10 @@
 #include "tsrm_win32.h"
 #endif
 
+
 #ifdef HAVE_SHMOP
 
 #include "ext/standard/info.h"
-
-#include <errno.h>
-#include <string.h> // for strerror()
 
 /* {{{ shmop_module_entry */
 zend_module_entry shmop_module_entry = {
@@ -118,6 +117,8 @@ PHP_MINIT_FUNCTION(shmop)
 	shmop_object_handlers.get_constructor = shmop_get_constructor;
 	shmop_object_handlers.clone_obj = NULL;
 	shmop_object_handlers.compare = zend_objects_not_comparable;
+
+	register_shmop_symbols(module_number);
 
 	return SUCCESS;
 }

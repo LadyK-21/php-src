@@ -1,7 +1,6 @@
 --TEST--
 PDO PgSQL Bug #38671 (PDO#getAttribute() cannot be called with platform-specific attribute names)
 --EXTENSIONS--
-pdo
 pdo_pgsql
 --SKIPIF--
 <?php
@@ -95,6 +94,6 @@ array(1) {
 ERR
 ERR
 string(5) "pgsql"
-ERR
+bool(true)
 ERR
 int(4)

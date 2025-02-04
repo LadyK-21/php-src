@@ -16,29 +16,21 @@
 */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
-#include "php_ini.h"
-#include "ext/standard/info.h"
+#include "zend_interfaces.h"
 #include "zend_exceptions.h"
+#include "zend_attributes.h"
 
-#include "php_spl.h"
 #include "spl_fixedarray_arginfo.h"
-#include "spl_functions.h"
-#include "spl_engine.h"
 #include "spl_fixedarray.h"
 #include "spl_exceptions.h"
-#include "spl_iterators.h"
-#include "ext/json/php_json.h"
+#include "ext/json/php_json.h" /* For php_json_serializable_ce */
 
-zend_object_handlers spl_handler_SplFixedArray;
+static zend_object_handlers spl_handler_SplFixedArray;
 PHPAPI zend_class_entry *spl_ce_SplFixedArray;
-
-#ifdef COMPILE_DL_SPL_FIXEDARRAY
-ZEND_GET_MODULE(spl_fixedarray)
-#endif
 
 /* Check if the object is an instance of a subclass of SplFixedArray that overrides method's implementation.
  * Expect subclassing SplFixedArray to be rare and check that first. */
@@ -48,6 +40,8 @@ typedef struct _spl_fixedarray {
 	zend_long size;
 	/* It is possible to resize this, so this can't be combined with the object */
 	zval *elements;
+	/* If positive, it's a resize within a resize and the value gives the desired size. If -1, it's not. */
+	zend_long cached_resize;
 } spl_fixedarray;
 
 typedef struct _spl_fixedarray_object {
@@ -87,6 +81,7 @@ static void spl_fixedarray_default_ctor(spl_fixedarray *array)
 {
 	array->size = 0;
 	array->elements = NULL;
+	array->cached_resize = -1;
 }
 
 /* Initializes the range [from, to) to null. Does not dtor existing elements. */
@@ -105,6 +100,7 @@ static void spl_fixedarray_init_non_empty_struct(spl_fixedarray *array, zend_lon
 	array->size = 0; /* reset size in case ecalloc() fails */
 	array->elements = size ? safe_emalloc(size, sizeof(zval), 0) : NULL;
 	array->size = size;
+	array->cached_resize = -1;
 }
 
 static void spl_fixedarray_init(spl_fixedarray *array, zend_long size)
@@ -146,6 +142,7 @@ static void spl_fixedarray_copy_ctor(spl_fixedarray *to, spl_fixedarray *from)
  */
 static void spl_fixedarray_dtor_range(spl_fixedarray *array, zend_long from, zend_long to)
 {
+	array->size = from;
 	zval *begin = array->elements + from, *end = array->elements + to;
 	while (begin != end) {
 		zval_ptr_dtor(begin++);
@@ -181,19 +178,35 @@ static void spl_fixedarray_resize(spl_fixedarray *array, zend_long size)
 		return;
 	}
 
+	if (UNEXPECTED(array->cached_resize >= 0)) {
+		/* We're already resizing, so just remember the desired size.
+		 * The resize will happen later. */
+		array->cached_resize = size;
+		return;
+	}
+	array->cached_resize = size;
+
 	/* clearing the array */
 	if (size == 0) {
 		spl_fixedarray_dtor(array);
 		array->elements = NULL;
+		array->size = 0;
 	} else if (size > array->size) {
 		array->elements = safe_erealloc(array->elements, size, sizeof(zval), 0);
 		spl_fixedarray_init_elems(array, array->size, size);
+		array->size = size;
 	} else { /* size < array->size */
+		/* Size set in spl_fixedarray_dtor_range() */
 		spl_fixedarray_dtor_range(array, size, array->size);
 		array->elements = erealloc(array->elements, sizeof(zval) * size);
 	}
 
-	array->size = size;
+	/* If resized within the destructor, take the last resize command and perform it */
+	zend_long cached_resize = array->cached_resize;
+	array->cached_resize = -1;
+	if (cached_resize != size) {
+		spl_fixedarray_resize(array, cached_resize);
+	}
 }
 
 static HashTable* spl_fixedarray_object_get_gc(zend_object *obj, zval **table, int *n)
@@ -226,10 +239,14 @@ static HashTable* spl_fixedarray_object_get_properties_for(zend_object *obj, zen
 	zval *const elements = intern->array.elements;
 	HashTable *ht = zend_new_array(size);
 
-	for (zend_long i = 0; i < size; i++) {
-		Z_TRY_ADDREF_P(&elements[i]);
-		zend_hash_next_index_insert(ht, &elements[i]);
+	/* The array elements are not *real properties*. */
+	if (purpose != ZEND_PROP_PURPOSE_GET_OBJECT_VARS) {
+		for (zend_long i = 0; i < size; i++) {
+			Z_TRY_ADDREF_P(&elements[i]);
+			zend_hash_next_index_insert(ht, &elements[i]);
+		}
 	}
+
 	if (source_properties && zend_hash_num_elements(source_properties) > 0) {
 		zend_long nkey;
 		zend_string *skey;
@@ -282,7 +299,8 @@ static zend_object *spl_fixedarray_object_new_ex(zend_class_entry *class_type, z
 	ZEND_ASSERT(parent);
 
 	if (UNEXPECTED(inherited)) {
-		zend_function *fptr_count = zend_hash_str_find_ptr(&class_type->function_table, "count", sizeof("count") - 1);
+		/* Find count() method */
+		zend_function *fptr_count = zend_hash_find_ptr(&class_type->function_table, ZSTR_KNOWN(ZEND_STR_COUNT));
 		if (fptr_count->common.scope == parent) {
 			fptr_count = NULL;
 		}
@@ -333,7 +351,8 @@ static zend_long spl_offset_convert_to_long(zval *offset) /* {{{ */
 			return Z_RES_HANDLE_P(offset);
 	}
 
-	zend_type_error("Illegal offset type");
+	/* Use SplFixedArray name from the CE */
+	zend_illegal_container_offset(spl_ce_SplFixedArray->name, offset, BP_VAR_R);
 	return 0;
 }
 
@@ -354,8 +373,7 @@ static zval *spl_fixedarray_object_read_dimension_helper(spl_fixedarray_object *
 	}
 
 	if (index < 0 || index >= intern->array.size) {
-		// TODO Change error message and use OutOfBound SPL Exception?
-		zend_throw_exception(spl_ce_RuntimeException, "Index invalid or out of range", 0);
+		zend_throw_exception(spl_ce_OutOfBoundsException, "Index invalid or out of range", 0);
 		return NULL;
 	} else {
 		return &intern->array.elements[index];
@@ -403,8 +421,7 @@ static void spl_fixedarray_object_write_dimension_helper(spl_fixedarray_object *
 	}
 
 	if (index < 0 || index >= intern->array.size) {
-		// TODO Change error message and use OutOfBound SPL Exception?
-		zend_throw_exception(spl_ce_RuntimeException, "Index invalid or out of range", 0);
+		zend_throw_exception(spl_ce_OutOfBoundsException, "Index invalid or out of range", 0);
 		return;
 	} else {
 		/* Fix #81429 */
@@ -443,12 +460,13 @@ static void spl_fixedarray_object_unset_dimension_helper(spl_fixedarray_object *
 	}
 
 	if (index < 0 || index >= intern->array.size) {
-		// TODO Change error message and use OutOfBound SPL Exception?
-		zend_throw_exception(spl_ce_RuntimeException, "Index invalid or out of range", 0);
+		zend_throw_exception(spl_ce_OutOfBoundsException, "Index invalid or out of range", 0);
 		return;
 	} else {
-		zval_ptr_dtor(&(intern->array.elements[index]));
+		zval garbage;
+		ZVAL_COPY_VALUE(&garbage, &intern->array.elements[index]);
 		ZVAL_NULL(&intern->array.elements[index]);
+		zval_ptr_dtor(&garbage);
 	}
 }
 
@@ -581,8 +599,8 @@ PHP_METHOD(SplFixedArray, __serialize)
 		RETURN_THROWS();
 	}
 
-	uint32_t num_properties =
-		intern->std.properties ? zend_hash_num_elements(intern->std.properties) : 0;
+	HashTable *ht = zend_std_get_properties(&intern->std);
+	uint32_t num_properties = zend_hash_num_elements(ht);
 	array_init_size(return_value, intern->array.size + num_properties);
 
 	/* elements */
@@ -593,12 +611,15 @@ PHP_METHOD(SplFixedArray, __serialize)
 	}
 
 	/* members */
-	if (intern->std.properties) {
-		ZEND_HASH_FOREACH_STR_KEY_VAL(intern->std.properties, key, current) {
-			zend_hash_add(Z_ARRVAL_P(return_value), key, current);
+	ZEND_HASH_FOREACH_STR_KEY_VAL_IND(ht, key, current) {
+		/* If the properties table was already rebuild, it will also contain the
+		 * array elements. The array elements are already added in the above loop.
+		 * We can detect array elements by the fact that their key == NULL. */
+		if (key != NULL) {
+			zend_hash_add_new(Z_ARRVAL_P(return_value), key, current);
 			Z_TRY_ADDREF_P(current);
-		} ZEND_HASH_FOREACH_END();
-	}
+		}
+	} ZEND_HASH_FOREACH_END();
 }
 
 PHP_METHOD(SplFixedArray, __unserialize)
@@ -718,7 +739,7 @@ PHP_METHOD(SplFixedArray, fromArray)
 		}
 		spl_fixedarray_init(&array, tmp);
 
-		ZEND_HASH_FOREACH_KEY_VAL(Z_ARRVAL_P(data), num_index, str_index, element) {
+		ZEND_HASH_FOREACH_NUM_KEY_VAL(Z_ARRVAL_P(data), num_index, element) {
 			ZVAL_COPY_DEREF(&array.elements[num_index], element);
 		} ZEND_HASH_FOREACH_END();
 
@@ -873,7 +894,7 @@ static void spl_fixedarray_it_rewind(zend_object_iterator *iter)
 	((spl_fixedarray_it*)iter)->current = 0;
 }
 
-static int spl_fixedarray_it_valid(zend_object_iterator *iter)
+static zend_result spl_fixedarray_it_valid(zend_object_iterator *iter)
 {
 	spl_fixedarray_it     *iterator = (spl_fixedarray_it*)iter;
 	spl_fixedarray_object *object   = Z_SPLFIXEDARRAY_P(&iter->data);
@@ -922,7 +943,7 @@ static const zend_object_iterator_funcs spl_fixedarray_it_funcs = {
 	NULL, /* get_gc */
 };
 
-zend_object_iterator *spl_fixedarray_get_iterator(zend_class_entry *ce, zval *object, int by_ref)
+static zend_object_iterator *spl_fixedarray_get_iterator(zend_class_entry *ce, zval *object, int by_ref)
 {
 	spl_fixedarray_it *iterator;
 

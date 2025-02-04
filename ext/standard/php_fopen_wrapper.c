@@ -29,9 +29,6 @@
 #include "php_fopen_wrappers.h"
 #include "SAPI.h"
 
-#include <errno.h>
-#include <string.h> // for strerror()
-
 static ssize_t php_stream_output_write(php_stream *stream, const char *buf, size_t count) /* {{{ */
 {
 	PHPWRITE(buf, count);
@@ -52,7 +49,7 @@ static int php_stream_output_close(php_stream *stream, int close_handle) /* {{{ 
 }
 /* }}} */
 
-const php_stream_ops php_stream_output_ops = {
+static const php_stream_ops php_stream_output_ops = {
 	php_stream_output_write,
 	php_stream_output_read,
 	php_stream_output_close,
@@ -137,7 +134,7 @@ static int php_stream_input_seek(php_stream *stream, zend_off_t offset, int when
 }
 /* }}} */
 
-const php_stream_ops php_stream_input_ops = {
+static const php_stream_ops php_stream_input_ops = {
 	php_stream_input_write,
 	php_stream_input_read,
 	php_stream_input_close,
@@ -176,7 +173,7 @@ static void php_stream_apply_filter_list(php_stream *stream, char *filterlist, i
 }
 /* }}} */
 
-php_stream * php_stream_url_wrap_php(php_stream_wrapper *wrapper, const char *path, const char *mode, int options,
+static php_stream * php_stream_url_wrap_php(php_stream_wrapper *wrapper, const char *path, const char *mode, int options,
 									 zend_string **opened_path, php_stream_context *context STREAMS_DC) /* {{{ */
 {
 	int fd = -1;
@@ -355,7 +352,7 @@ php_stream * php_stream_url_wrap_php(php_stream_wrapper *wrapper, const char *pa
 			return NULL;
 		}
 
-		if (!(stream = php_stream_open_wrapper(p + 10, mode, options, opened_path))) {
+		if (!(stream = php_stream_open_wrapper_ex(p + 10, mode, options, opened_path, context))) {
 			efree(pathdup);
 			return NULL;
 		}

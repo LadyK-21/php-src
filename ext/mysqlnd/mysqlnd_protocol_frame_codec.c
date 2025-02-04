@@ -202,6 +202,7 @@ MYSQLND_METHOD(mysqlnd_pfc, send)(MYSQLND_PFC * const pfc, MYSQLND_VIO * const v
 	if (bytes_sent <= 0) {
 		DBG_ERR_FMT("Can't %zu send bytes", count);
 		SET_CLIENT_ERROR(error_info, CR_SERVER_GONE_ERROR, UNKNOWN_SQLSTATE, mysqlnd_server_gone);
+		bytes_sent = 0; // the return type is unsigned and 0 represents an error condition
 	}
 	DBG_RETURN(bytes_sent);
 }
@@ -354,9 +355,6 @@ MYSQLND_METHOD(mysqlnd_pfc, receive)(MYSQLND_PFC * const pfc, MYSQLND_VIO * cons
 				DBG_RETURN(FAIL);
 			}
 			pfc->data->compressed_envelope_packet_no++;
-#ifdef MYSQLND_DUMP_HEADER_N_BODY
-			DBG_INF_FMT("HEADER: hwd_packet_no=%u size=%3u", packet_no, (zend_ulong) net_payload_size);
-#endif
 			/* Now let's read from the wire, decompress it and fill the read buffer */
 			pfc->data->m.read_compressed_packet_from_stream_and_fill_read_buffer(pfc, vio, net_payload_size, conn_stats, error_info);
 

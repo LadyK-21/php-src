@@ -17,9 +17,8 @@
 #ifndef ZEND_SMART_STR_PUBLIC_H
 #define ZEND_SMART_STR_PUBLIC_H
 
-#include <stddef.h> // for size_t
+#include <stddef.h>
 
-// forward declarations
 typedef struct _zend_string zend_string;
 
 typedef struct {

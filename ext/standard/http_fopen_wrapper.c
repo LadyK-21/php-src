@@ -79,6 +79,7 @@
 
 #define HTTP_WRAPPER_HEADER_INIT    1
 #define HTTP_WRAPPER_REDIRECTED     2
+#define HTTP_WRAPPER_KEEP_METHOD    4
 
 static inline void strip_header(char *header_bag, char *lc_header_bag,
 		const char *lc_header_name)
@@ -114,6 +115,34 @@ static bool check_has_header(const char *headers, const char *header) {
 	return 0;
 }
 
+static zend_result php_stream_handle_proxy_authorization_header(const char *s, smart_str *header)
+{
+	const char *p;
+
+	do {
+		while (*s == ' ' || *s == '\t') s++;
+		p = s;
+		while (*p != 0 && *p != ':' && *p != '\r' && *p !='\n') p++;
+		if (*p == ':') {
+			p++;
+			if (p - s == sizeof("Proxy-Authorization:") - 1 &&
+				zend_binary_strcasecmp(s, sizeof("Proxy-Authorization:") - 1,
+									   "Proxy-Authorization:", sizeof("Proxy-Authorization:") - 1) == 0) {
+				while (*p != 0 && *p != '\r' && *p !='\n') p++;
+				smart_str_appendl(header, s, p - s);
+				smart_str_appendl(header, "\r\n", sizeof("\r\n")-1);
+				return SUCCESS;
+			} else {
+				while (*p != 0 && *p != '\r' && *p !='\n') p++;
+			}
+		}
+		s = p;
+		while (*s == '\r' || *s == '\n') s++;
+	} while (*s != 0);
+
+	return FAILURE;
+}
+
 static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 		const char *path, const char *mode, int options, zend_string **opened_path,
 		php_stream_context *context, int redirect_max, int flags,
@@ -135,11 +164,12 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 	zend_string *transport_string;
 	zend_string *errstr = NULL;
 	int have_header = 0;
-	bool request_fulluri = 0, ignore_errors = 0;
+	bool request_fulluri = false, ignore_errors = false;
 	struct timeval timeout;
 	char *user_headers = NULL;
 	int header_init = ((flags & HTTP_WRAPPER_HEADER_INIT) != 0);
 	int redirected = ((flags & HTTP_WRAPPER_REDIRECTED) != 0);
+	int redirect_keep_method = ((flags & HTTP_WRAPPER_KEEP_METHOD) != 0);
 	bool follow_location = 1;
 	php_stream_filter *transfer_encoding = NULL;
 	int response_code;
@@ -158,6 +188,7 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 		return NULL;
 	}
 
+	ZEND_ASSERT(resource->scheme);
 	if (!zend_string_equals_literal_ci(resource->scheme, "http") &&
 		!zend_string_equals_literal_ci(resource->scheme, "https")) {
 		if (!context ||
@@ -168,7 +199,7 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 			return php_stream_open_wrapper_ex(path, mode, REPORT_ERRORS, NULL, context);
 		}
 		/* Called from a non-http wrapper with http proxying requested (i.e. ftp) */
-		request_fulluri = 1;
+		request_fulluri = true;
 		use_ssl = 0;
 		use_proxy = 1;
 		transport_string = zend_string_copy(Z_STR_P(tmpzval));
@@ -181,7 +212,12 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 			return NULL;
 		}
 
-		use_ssl = resource->scheme && (ZSTR_LEN(resource->scheme) > 4) && ZSTR_VAL(resource->scheme)[4] == 's';
+		/* Should we send the entire path in the request line, default to no. */
+		if (context && (tmpzval = php_stream_context_get_option(context, "http", "request_fulluri")) != NULL) {
+			request_fulluri = zend_is_true(tmpzval);
+		}
+
+		use_ssl = (ZSTR_LEN(resource->scheme) > 4) && ZSTR_VAL(resource->scheme)[4] == 's';
 		/* choose default ports */
 		if (use_ssl && resource->port == 0)
 			resource->port = 443;
@@ -199,8 +235,27 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 		}
 	}
 
+	if (request_fulluri && (strchr(path, '\n') != NULL || strchr(path, '\r') != NULL)) {
+		php_stream_wrapper_log_error(wrapper, options, "HTTP wrapper full URI path does not allow CR or LF characters");
+		php_url_free(resource);
+		zend_string_release(transport_string);
+		return NULL;
+	}
+
 	if (context && (tmpzval = php_stream_context_get_option(context, wrapper->wops->label, "timeout")) != NULL) {
 		double d = zval_get_double(tmpzval);
+#ifndef PHP_WIN32
+		const double timeoutmax = (double) PHP_TIMEOUT_ULL_MAX / 1000000.0;
+#else
+		const double timeoutmax = (double) LONG_MAX / 1000000.0;
+#endif
+
+		if (d > timeoutmax) {
+			php_stream_wrapper_log_error(wrapper, options, "timeout must be lower than " ZEND_ULONG_FMT, (zend_ulong)timeoutmax);
+			zend_string_release(transport_string);
+			php_url_free(resource);
+			return NULL;
+		}
 #ifndef PHP_WIN32
 		timeout.tv_sec = (time_t) d;
 		timeout.tv_usec = (size_t) ((d - timeout.tv_sec) * 1000000);
@@ -251,7 +306,7 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 
 	    /* check if we have Proxy-Authorization header */
 		if (context && (tmpzval = php_stream_context_get_option(context, "http", "header")) != NULL) {
-			char *s, *p;
+			const char *s;
 
 			if (Z_TYPE_P(tmpzval) == IS_ARRAY) {
 				zval *tmpheader = NULL;
@@ -259,50 +314,16 @@ static php_stream *php_stream_url_wrap_http_ex(php_stream_wrapper *wrapper,
 				ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(tmpzval), tmpheader) {
 					if (Z_TYPE_P(tmpheader) == IS_STRING) {
 						s = Z_STRVAL_P(tmpheader);
-						do {
-							while (*s == ' ' || *s == '\t') s++;
-							p = s;
-							while (*p != 0 && *p != ':' && *p != '\r' && *p !='\n') p++;
-							if (*p == ':') {
-								p++;
-								if (p - s == sizeof("Proxy-Authorization:") - 1 &&
-								    zend_binary_strcasecmp(s, sizeof("Proxy-Authorization:") - 1,
-								        "Proxy-Authorization:", sizeof("Proxy-Authorization:") - 1) == 0) {
-									while (*p != 0 && *p != '\r' && *p !='\n') p++;
-									smart_str_appendl(&header, s, p - s);
-									smart_str_appendl(&header, "\r\n", sizeof("\r\n")-1);
-									goto finish;
-								} else {
-									while (*p != 0 && *p != '\r' && *p !='\n') p++;
-								}
-							}
-							s = p;
-							while (*s == '\r' || *s == '\n') s++;
-						} while (*s != 0);
+						if (php_stream_handle_proxy_authorization_header(s, &header) == SUCCESS) {
+							goto finish;
+						}
 					}
 				} ZEND_HASH_FOREACH_END();
 			} else if (Z_TYPE_P(tmpzval) == IS_STRING && Z_STRLEN_P(tmpzval)) {
 				s = Z_STRVAL_P(tmpzval);
-				do {
-					while (*s == ' ' || *s == '\t') s++;
-					p = s;
-					while (*p != 0 && *p != ':' && *p != '\r' && *p !='\n') p++;
-					if (*p == ':') {
-						p++;
-						if (p - s == sizeof("Proxy-Authorization:") - 1 &&
-						    zend_binary_strcasecmp(s, sizeof("Proxy-Authorization:") - 1,
-						        "Proxy-Authorization:", sizeof("Proxy-Authorization:") - 1) == 0) {
-							while (*p != 0 && *p != '\r' && *p !='\n') p++;
-							smart_str_appendl(&header, s, p - s);
-							smart_str_appendl(&header, "\r\n", sizeof("\r\n")-1);
-							goto finish;
-						} else {
-							while (*p != 0 && *p != '\r' && *p !='\n') p++;
-						}
-					}
-					s = p;
-					while (*s == '\r' || *s == '\n') s++;
-				} while (*s != 0);
+				if (php_stream_handle_proxy_authorization_header(s, &header) == SUCCESS) {
+					goto finish;
+				}
 			}
 		}
 finish:
@@ -363,8 +384,8 @@ finish:
 	if (context && (tmpzval = php_stream_context_get_option(context, "http", "method")) != NULL) {
 		if (Z_TYPE_P(tmpzval) == IS_STRING && Z_STRLEN_P(tmpzval) > 0) {
 			/* As per the RFC, automatically redirected requests MUST NOT use other methods than
-			 * GET and HEAD unless it can be confirmed by the user */
-			if (!redirected
+			 * GET and HEAD unless it can be confirmed by the user. */
+			if (!redirected || redirect_keep_method
 				|| zend_string_equals_literal(Z_STR_P(tmpzval), "GET")
 				|| zend_string_equals_literal(Z_STR_P(tmpzval), "HEAD")
 			) {
@@ -377,12 +398,6 @@ finish:
 
 	if (!custom_request_method) {
 		smart_str_appends(&req_buf, "GET ");
-	}
-
-	/* Should we send the entire path in the request line, default to no. */
-	if (!request_fulluri && context &&
-		(tmpzval = php_stream_context_get_option(context, "http", "request_fulluri")) != NULL) {
-		request_fulluri = zend_is_true(tmpzval);
 	}
 
 	if (request_fulluri) {
@@ -458,7 +473,7 @@ finish:
 			zend_str_tolower(ZSTR_VAL(tmp), ZSTR_LEN(tmp));
 			t = ZSTR_VAL(tmp);
 
-			if (!header_init) {
+			if (!header_init && !redirect_keep_method) {
 				/* strip POST headers on redirect */
 				strip_header(user_headers, t, "content-length:");
 				strip_header(user_headers, t, "content-type:");
@@ -567,7 +582,7 @@ finish:
 	 * interprets the RFC literally and establishes a keep-alive connection,
 	 * unless the user specifically requests something else by specifying a
 	 * Connection header in the context options. Send that header even for
-	 * HTTP/1.0 to avoid issues when the server respond with a HTTP/1.1
+	 * HTTP/1.0 to avoid issues when the server respond with an HTTP/1.1
 	 * keep-alive response, which is the preferred response type. */
 	if ((have_header & HTTP_HEADER_CONNECTION) == 0) {
 		smart_str_appends(&req_buf, "Connection: close\r\n");
@@ -606,7 +621,7 @@ finish:
 		 * see bug #44603 for details. Since Content-Type maybe part of user's headers we need to do this check first.
 		 */
 		if (
-				header_init &&
+				(header_init || redirect_keep_method) &&
 				context &&
 				!(have_header & HTTP_HEADER_CONTENT_LENGTH) &&
 				(tmpzval = php_stream_context_get_option(context, "http", "content")) != NULL &&
@@ -624,7 +639,7 @@ finish:
 	}
 
 	/* Request content, such as for POST requests */
-	if (header_init && context &&
+	if ((header_init || redirect_keep_method) && context &&
 		(tmpzval = php_stream_context_get_option(context, "http", "content")) != NULL &&
 		Z_TYPE_P(tmpzval) == IS_STRING && Z_STRLEN_P(tmpzval) > 0) {
 		if (!(have_header & HTTP_HEADER_CONTENT_LENGTH)) {
@@ -789,8 +804,19 @@ finish:
 			} else if (!strncasecmp(http_header_line, "Content-Type:", sizeof("Content-Type:")-1)) {
 				php_stream_notify_info(context, PHP_STREAM_NOTIFY_MIME_TYPE_IS, http_header_value, 0);
 			} else if (!strncasecmp(http_header_line, "Content-Length:", sizeof("Content-Length:")-1)) {
-				file_size = atoi(http_header_value);
-				php_stream_notify_file_size(context, file_size, http_header_line, 0);
+				/* https://www.rfc-editor.org/rfc/rfc9110.html#name-content-length */
+				const char *ptr = http_header_value;
+				/* must contain only digits, no + or - symbols */
+				if (*ptr >= '0' && *ptr <= '9') {
+					char *endptr = NULL;
+					size_t parsed = ZEND_STRTOUL(ptr, &endptr, 10);
+					/* check whether there was no garbage in the header value and the conversion was successful */
+					if (endptr && !*endptr) {
+						/* truncate for 32-bit such that no negative file sizes occur */
+						file_size = MIN(parsed, ZEND_LONG_MAX);
+						php_stream_notify_file_size(context, file_size, http_header_line, 0);
+					}
+				}
 			} else if (
 				!strncasecmp(http_header_line, "Transfer-Encoding:", sizeof("Transfer-Encoding:")-1)
 				&& !strncasecmp(http_header_value, "Chunked", sizeof("Chunked")-1)
@@ -798,7 +824,7 @@ finish:
 
 				/* create filter to decode response body */
 				if (!(options & STREAM_ONLY_GET_HEADERS)) {
-					zend_long decode = 1;
+					bool decode = true;
 
 					if (context && (tmpzval = php_stream_context_get_option(context, "http", "auto_decode")) != NULL) {
 						decode = zend_is_true(tmpzval);
@@ -857,7 +883,7 @@ finish:
 							s = ZSTR_VAL(resource->path);
 							if (!ZSTR_LEN(resource->path)) {
 								zend_string_release_ex(resource->path, 0);
-								resource->path = zend_string_init("/", 1, 0);
+								resource->path = ZSTR_INIT_LITERAL("/", 0);
 								s = ZSTR_VAL(resource->path);
 							} else {
 								*s = '/';
@@ -913,9 +939,16 @@ finish:
 				CHECK_FOR_CNTRL_CHARS(resource->pass);
 				CHECK_FOR_CNTRL_CHARS(resource->path);
 			}
+			int new_flags = HTTP_WRAPPER_REDIRECTED;
+			if (response_code == 307 || response_code == 308) {
+				/* RFC 7538 specifies that status code 308 does not allow changing the request method from POST to GET.
+				 * RFC 7231 does the same for status code 307.
+				 * To keep consistency between POST and PATCH requests, we'll also not change the request method from PATCH to GET, even though it's allowed it's not mandated by the RFC. */
+				new_flags |= HTTP_WRAPPER_KEEP_METHOD;
+			}
 			stream = php_stream_url_wrap_http_ex(
 				wrapper, new_path, mode, options, opened_path, context,
-				--redirect_max, HTTP_WRAPPER_REDIRECTED, response_header STREAMS_CC);
+				--redirect_max, new_flags, response_header STREAMS_CC);
 		} else {
 			php_stream_wrapper_log_error(wrapper, options, "HTTP request failed! %s", tmp_line);
 		}
@@ -955,6 +988,13 @@ out:
 		if (transfer_encoding) {
 			php_stream_filter_append(&stream->readfilters, transfer_encoding);
 		}
+
+		/* It's possible that the server already sent in more data than just the headers.
+		 * We account for this by adjusting the progress counter by the difference of
+		 * already read header data and the body. */
+		if (stream->writepos > stream->readpos) {
+			php_stream_notify_progress_increment(context, stream->writepos - stream->readpos, 0);
+		}
 	}
 
 	return stream;
@@ -965,13 +1005,19 @@ php_stream *php_stream_url_wrap_http(php_stream_wrapper *wrapper, const char *pa
 {
 	php_stream *stream;
 	zval headers;
+
 	ZVAL_UNDEF(&headers);
+
+	zval_ptr_dtor(&BG(last_http_headers));
+	ZVAL_UNDEF(&BG(last_http_headers));
 
 	stream = php_stream_url_wrap_http_ex(
 		wrapper, path, mode, options, opened_path, context,
 		PHP_URL_REDIRECT_MAX, HTTP_WRAPPER_HEADER_INIT, &headers STREAMS_CC);
 
 	if (!Z_ISUNDEF(headers)) {
+		ZVAL_COPY(&BG(last_http_headers), &headers);
+
 		if (FAILURE == zend_set_local_var_str(
 				"http_response_header", sizeof("http_response_header")-1, &headers, 0)) {
 			zval_ptr_dtor(&headers);

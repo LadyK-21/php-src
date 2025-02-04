@@ -15,17 +15,15 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
 #endif
 
 #include "php.h"
-#include "php_ini.h"
 #include "php_main.h"
 #include "ext/standard/info.h"
 #include "php_spl.h"
 #include "php_spl_arginfo.h"
 #include "spl_functions.h"
-#include "spl_engine.h"
 #include "spl_array.h"
 #include "spl_directory.h"
 #include "spl_iterators.h"
@@ -37,10 +35,6 @@
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
 #include "main/snprintf.h"
-
-#ifdef COMPILE_DL_SPL
-ZEND_GET_MODULE(spl)
-#endif
 
 ZEND_TLS zend_string *spl_autoload_extensions;
 ZEND_TLS HashTable *spl_autoload_functions;
@@ -74,12 +68,13 @@ PHP_FUNCTION(class_parents)
 	zend_class_entry *parent_class, *ce;
 	bool autoload = 1;
 
+	/* We do not use Z_PARAM_OBJ_OR_STR here to be able to exclude int, float, and bool which are bogus class names */
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "z|b", &obj, &autoload) == FAILURE) {
 		RETURN_THROWS();
 	}
 
 	if (Z_TYPE_P(obj) != IS_OBJECT && Z_TYPE_P(obj) != IS_STRING) {
-		zend_argument_type_error(1, "must be of type object|string, %s given", zend_zval_type_name(obj));
+		zend_argument_type_error(1, "must be of type object|string, %s given", zend_zval_value_name(obj));
 		RETURN_THROWS();
 	}
 
@@ -107,11 +102,12 @@ PHP_FUNCTION(class_implements)
 	bool autoload = 1;
 	zend_class_entry *ce;
 
+	/* We do not use Z_PARAM_OBJ_OR_STR here to be able to exclude int, float, and bool which are bogus class names */
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "z|b", &obj, &autoload) == FAILURE) {
 		RETURN_THROWS();
 	}
 	if (Z_TYPE_P(obj) != IS_OBJECT && Z_TYPE_P(obj) != IS_STRING) {
-		zend_argument_type_error(1, "must be of type object|string, %s given", zend_zval_type_name(obj));
+		zend_argument_type_error(1, "must be of type object|string, %s given", zend_zval_value_name(obj));
 		RETURN_THROWS();
 	}
 
@@ -135,11 +131,12 @@ PHP_FUNCTION(class_uses)
 	bool autoload = 1;
 	zend_class_entry *ce;
 
+	/* We do not use Z_PARAM_OBJ_OR_STR here to be able to exclude int, float, and bool which are bogus class names */
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "z|b", &obj, &autoload) == FAILURE) {
 		RETURN_THROWS();
 	}
 	if (Z_TYPE_P(obj) != IS_OBJECT && Z_TYPE_P(obj) != IS_STRING) {
-		zend_argument_type_error(1, "must be of type object|string, %s given", zend_zval_type_name(obj));
+		zend_argument_type_error(1, "must be of type object|string, %s given", zend_zval_value_name(obj));
 		RETURN_THROWS();
 	}
 
@@ -585,8 +582,10 @@ PHP_FUNCTION(spl_autoload_unregister)
 
 	if (fcc.function_handler && zend_string_equals_literal(
 			fcc.function_handler->common.function_name, "spl_autoload_call")) {
-		/* Don't destroy the hash table, as we might be iterating over it right now. */
-		zend_hash_clean(spl_autoload_functions);
+		if (spl_autoload_functions) {
+			/* Don't destroy the hash table, as we might be iterating over it right now. */
+			zend_hash_clean(spl_autoload_functions);
+		}
 		RETURN_TRUE;
 	}
 

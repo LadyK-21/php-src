@@ -145,30 +145,11 @@ ZEND_API zend_ini_scanner_globals ini_scanner_globals;
 	if (SCNG(scanner_mode) == ZEND_INI_SCANNER_TYPED &&            \
 		(YYSTATE == STATE(ST_VALUE) || YYSTATE == STATE(ST_RAW))) {\
 		zend_ini_copy_typed_value(ini_lval, type, str, len);       \
+		Z_EXTRA_P(ini_lval) = 0;                                   \
 	} else {                                                       \
 		zend_ini_copy_value(ini_lval, str, len);                   \
 	}                                                              \
 	return type;                                                   \
-}
-
-static inline zend_result convert_to_number(zval *retval, const char *str, const int str_len)
-{
-	zend_uchar type;
-	int overflow;
-	zend_long lval;
-	double dval;
-
-	if ((type = is_numeric_string_ex(str, str_len, &lval, &dval, 0, &overflow, NULL)) != 0) {
-		if (type == IS_LONG) {
-			ZVAL_LONG(retval, lval);
-			return SUCCESS;
-		} else if (type == IS_DOUBLE && !overflow) {
-			ZVAL_DOUBLE(retval, dval);
-			return SUCCESS;
-		}
-	}
-
-	return FAILURE;
 }
 
 static void zend_ini_copy_typed_value(zval *retval, const int type, const char *str, int len)
@@ -183,11 +164,6 @@ static void zend_ini_copy_typed_value(zval *retval, const int type, const char *
 			ZVAL_NULL(retval);
 			break;
 
-		case TC_NUMBER:
-			if (convert_to_number(retval, str, len) == SUCCESS) {
-				break;
-			}
-			ZEND_FALLTHROUGH;
 		default:
 			zend_ini_copy_value(retval, str, len);
 	}
@@ -383,7 +359,8 @@ NEWLINE	("\r"|"\n"|"\r\n")
 TABS_AND_SPACES [ \t]
 WHITESPACE [ \t]+
 CONSTANT [a-zA-Z_][a-zA-Z0-9_]*
-LABEL [^=\n\r\t;&|^$~(){}!"\[]+
+LABEL_CHAR [^=\n\r\t;&|^$~(){}!"\[\]\x00]
+LABEL ({LABEL_CHAR}+)
 TOKENS [:,.\[\]"'()&|^+-/*=%$!~<>?@{}]
 OPERATORS [&|^~()!]
 DOLLAR_CURLY "${"
@@ -394,6 +371,7 @@ RAW_VALUE_CHARS [^\n\r;\000]
 
 LITERAL_DOLLAR ("$"([^{\000]|("\\"{ANY_CHAR})))
 VALUE_CHARS         ([^$= \t\n\r;&|^~()!"'\000]|{LITERAL_DOLLAR})
+FALLBACK_CHARS		([^$\n\r;"'}\\]|("\\"{ANY_CHAR})|{LITERAL_DOLLAR})
 SECTION_VALUE_CHARS ([^$\n\r;"'\]\\]|("\\"{ANY_CHAR})|{LITERAL_DOLLAR})
 
 <!*> := yyleng = YYCURSOR - SCNG(yy_text);
@@ -441,12 +419,61 @@ SECTION_VALUE_CHARS ([^$\n\r;"'\]\\]|("\\"{ANY_CHAR})|{LITERAL_DOLLAR})
 	return ']';
 }
 
-<ST_DOUBLE_QUOTES,ST_SECTION_VALUE,ST_VALUE,ST_OFFSET>{DOLLAR_CURLY} { /* Variable start */
+<ST_DOUBLE_QUOTES,ST_SECTION_VALUE,ST_VALUE,ST_OFFSET,ST_VAR_FALLBACK>{DOLLAR_CURLY} { /* Variable start */
 	yy_push_state(ST_VARNAME);
 	return TC_DOLLAR_CURLY;
 }
 
-<ST_VARNAME>{LABEL} { /* Variable name */
+<ST_VARNAME>":-" { /* End Variable name, fallback start */
+fallback_lexing:
+	yy_pop_state();
+	yy_push_state(ST_VAR_FALLBACK);
+	return TC_FALLBACK;
+}
+
+<ST_VARNAME>{LABEL_CHAR} { /* Variable name */
+	if (YYCURSOR[0] == ':' && YYCURSOR[1] == '-') {
+		YYCURSOR++;
+		goto fallback_lexing;
+	}
+
+	while (YYCURSOR < YYLIMIT) {
+		switch (*YYCURSOR++) {
+			case '=':
+			case '\n':
+			case '\r':
+			case '\t':
+			case ';':
+			case '&':
+			case '|':
+			case '^':
+			case '$':
+			case '~':
+			case '(':
+			case ')':
+			case '{':
+			case '}':
+			case '!':
+			case '"':
+			case '[':
+			case ']':
+				break;
+			/* ':' is only allowed if it isn't followed by '-'. */
+			case ':':
+				if (YYCURSOR[0] == '-') {
+					break;
+				} else {
+					continue;
+				}
+			default:
+				continue;
+		}
+
+		YYCURSOR--;
+		yyleng = YYCURSOR - SCNG(yy_text);
+		break;
+	}
+
 	/* Eat leading whitespace */
 	EAT_LEADING_WHITESPACE();
 
@@ -456,7 +483,7 @@ SECTION_VALUE_CHARS ([^$\n\r;"'\]\\]|("\\"{ANY_CHAR})|{LITERAL_DOLLAR})
 	RETURN_TOKEN(TC_VARNAME, yytext, yyleng);
 }
 
-<ST_VARNAME>"}" { /* Variable end */
+<ST_VARNAME,ST_VAR_FALLBACK>"}" { /* Variable/fallback end */
 	yy_pop_state();
 	return '}';
 }
@@ -546,11 +573,11 @@ end_raw_value_chars:
 	return END_OF_LINE;
 }
 
-<ST_SECTION_VALUE,ST_VALUE,ST_OFFSET>{CONSTANT} { /* Get constant option value */
+<ST_SECTION_VALUE,ST_VALUE,ST_VAR_FALLBACK,ST_OFFSET>{CONSTANT} { /* Get constant option value */
 	RETURN_TOKEN(TC_CONSTANT, yytext, yyleng);
 }
 
-<ST_SECTION_VALUE,ST_VALUE,ST_OFFSET>{NUMBER} { /* Get number option value as string */
+<ST_SECTION_VALUE,ST_VALUE,ST_VAR_FALLBACK,ST_OFFSET>{NUMBER} { /* Get number option value as string */
 	RETURN_TOKEN(TC_NUMBER, yytext, yyleng);
 }
 
@@ -572,11 +599,15 @@ end_raw_value_chars:
 	RETURN_TOKEN(TC_STRING, yytext, yyleng);
 }
 
+<ST_VAR_FALLBACK>{FALLBACK_CHARS}+ { /* Same as below, but excluding '}' */
+	RETURN_TOKEN(TC_STRING, yytext, yyleng);
+}
+
 <ST_SECTION_VALUE,ST_OFFSET>{SECTION_VALUE_CHARS}+ { /* Get rest as section/offset value */
 	RETURN_TOKEN(TC_STRING, yytext, yyleng);
 }
 
-<ST_SECTION_VALUE,ST_VALUE,ST_OFFSET>{TABS_AND_SPACES}*["] { /* Double quoted '"' string start */
+<ST_SECTION_VALUE,ST_VALUE,ST_VAR_FALLBACK,ST_OFFSET>{TABS_AND_SPACES}*["] { /* Double quoted '"' string start */
 	yy_push_state(ST_DOUBLE_QUOTES);
 	return '"';
 }
@@ -623,10 +654,11 @@ end_raw_value_chars:
 	yyleng = YYCURSOR - SCNG(yy_text);
 
 	zend_ini_escape_string(ini_lval, yytext, yyleng, '"');
+	Z_EXTRA_P(ini_lval) = 0;
 	return TC_QUOTED_STRING;
 }
 
-<ST_SECTION_VALUE,ST_VALUE,ST_OFFSET>{WHITESPACE} {
+<ST_SECTION_VALUE,ST_VALUE,ST_OFFSET,ST_VAR_FALLBACK>{WHITESPACE} {
 	RETURN_TOKEN(TC_WHITESPACE, yytext, yyleng);
 }
 

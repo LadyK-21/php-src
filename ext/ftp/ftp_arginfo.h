@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 1f66f9b5745bebb0280464b3c1a7f8413c0c6ebc */
+ * Stub hash: 072486274a3361dee3655cfd046a293cfb8a2757 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_TYPE_MASK_EX(arginfo_ftp_connect, 0, 1, FTP\\Connection, MAY_BE_FALSE)
 	ZEND_ARG_TYPE_INFO(0, hostname, IS_STRING, 0)
@@ -107,7 +107,7 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_ftp_get, 0, 3, _IS_BOOL, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, offset, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_ftp_nb_get, 0, 3, IS_LONG, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_ftp_nb_get, 0, 3, MAY_BE_LONG|MAY_BE_FALSE)
 	ZEND_ARG_OBJ_INFO(0, ftp, FTP\\Connection, 0)
 	ZEND_ARG_TYPE_INFO(0, local_filename, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO(0, remote_filename, IS_STRING, 0)
@@ -193,7 +193,6 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_ftp_get_option, 0, 2, MAY_BE_LON
 	ZEND_ARG_TYPE_INFO(0, option, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
-
 ZEND_FUNCTION(ftp_connect);
 #if defined(HAVE_FTP_SSL)
 ZEND_FUNCTION(ftp_ssl_connect);
@@ -232,7 +231,6 @@ ZEND_FUNCTION(ftp_close);
 ZEND_FUNCTION(ftp_set_option);
 ZEND_FUNCTION(ftp_get_option);
 
-
 static const zend_function_entry ext_functions[] = {
 	ZEND_FE(ftp_connect, arginfo_ftp_connect)
 #if defined(HAVE_FTP_SSL)
@@ -269,14 +267,9 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(ftp_delete, arginfo_ftp_delete)
 	ZEND_FE(ftp_site, arginfo_ftp_site)
 	ZEND_FE(ftp_close, arginfo_ftp_close)
-	ZEND_FALIAS(ftp_quit, ftp_close, arginfo_ftp_quit)
+	ZEND_RAW_FENTRY("ftp_quit", zif_ftp_close, arginfo_ftp_quit, 0, NULL, NULL)
 	ZEND_FE(ftp_set_option, arginfo_ftp_set_option)
 	ZEND_FE(ftp_get_option, arginfo_ftp_get_option)
-	ZEND_FE_END
-};
-
-
-static const zend_function_entry class_FTP_Connection_methods[] = {
 	ZEND_FE_END
 };
 
@@ -302,9 +295,8 @@ static zend_class_entry *register_class_FTP_Connection(void)
 {
 	zend_class_entry ce, *class_entry;
 
-	INIT_NS_CLASS_ENTRY(ce, "FTP", "Connection", class_FTP_Connection_methods);
-	class_entry = zend_register_internal_class_ex(&ce, NULL);
-	class_entry->ce_flags |= ZEND_ACC_FINAL|ZEND_ACC_NO_DYNAMIC_PROPERTIES|ZEND_ACC_NOT_SERIALIZABLE;
+	INIT_NS_CLASS_ENTRY(ce, "FTP", "Connection", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL|ZEND_ACC_NO_DYNAMIC_PROPERTIES|ZEND_ACC_NOT_SERIALIZABLE);
 
 	return class_entry;
 }

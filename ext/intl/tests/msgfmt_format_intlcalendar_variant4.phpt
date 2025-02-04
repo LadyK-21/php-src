@@ -4,7 +4,6 @@ MessageFormat accepts IntlCalendar args
 intl
 --SKIPIF--
 <?php
-if (version_compare(INTL_ICU_VERSION, '54.1') < 0) die('skip for ICU >= 54.1');
 if (str_contains(PHP_OS, 'FreeBSD')) {
     die('xfail Fails on FreeBSD for unknown reason');
 }
@@ -29,5 +28,6 @@ echo "msgf2: ", $msgf->format(array($time, 'date')), " ",
 */
 
 ?>
---EXPECT--
+--EXPECTF--
+Deprecated: Calling IntlGregorianCalendar::__construct() with more than 2 arguments is deprecated, use either IntlGregorianCalendar::createFromDate() or IntlGregorianCalendar::createFromDateTime() instead in %s on line %d
 quinta-feira, 17 de maio de 2012 5:35:36 da tarde ptlis

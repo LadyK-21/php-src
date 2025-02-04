@@ -25,6 +25,13 @@ print("Bad ASCII (strict): " . mb_detect_encoding("\xDD\x92", ['ASCII', 'UTF-8']
 print("Bad ASCII/UTF-8, with more errors for ASCII (non-strict): " . mb_detect_encoding("\xD6\x8A\x8A", ['ASCII', 'UTF-8'], false) . "\n");
 print("Bad ASCII/UTF-8, with more errors for ASCII (strict): " . var_export(mb_detect_encoding("\xD6\x8A\x8A", ['ASCII', 'UTF-8'], true), true) . "\n");
 
+print("UTF-8 BOM (non-strict): " . mb_detect_encoding("\xEF\xBB\xBF", ["UTF-8", "ASCII"], false) . "\n");
+print("UTF-8 BOM (strict): " . mb_detect_encoding("\xEF\xBB\xBF", ["UTF-8", "ASCII"], true) . "\n");
+print("UTF-16BE BOM (non-strict): " . mb_detect_encoding("\xFE\xFF", ["UTF-8", "UTF-16BE", "UTF-16LE"], false) . "\n");
+print("UTF-16BE BOM (strict): " . mb_detect_encoding("\xFE\xFF", ["UTF-8", "UTF-16BE", "UTF-16LE"], true) . "\n");
+print("UTF-16LE BOM (non-strict): " . mb_detect_encoding("\xFF\xFE", ["UTF-8", "UTF-16BE", "UTF-16LE"], false) . "\n");
+print("UTF-16LE BOM (strict): " . mb_detect_encoding("\xFF\xFE", ["UTF-8", "UTF-16BE", "UTF-16LE"], true) . "\n");
+
 print("SJIS: " . mb_detect_encoding($sjis, 'SJIS', true) . "\n");
 print("JIS: " . mb_detect_encoding($jis, 'JIS', true) . "\n");
 print("EUC-JP (strict): " . mb_detect_encoding($euc_jp, 'UTF-8,EUC-JP,JIS', true) . "\n");
@@ -78,6 +85,25 @@ echo mb_detect_encoding($test, ['UTF-8', 'ISO-8859-1']), "\n"; // Should be UTF-
 echo mb_detect_encoding('abc', ['UUENCODE', 'UTF-8']), "\n";
 echo mb_detect_encoding('abc', ['UUENCODE', 'QPrint', 'HTML-ENTITIES', 'Base64', '7bit', '8bit', 'SJIS']), "\n";
 
+// This test case courtesy of Adrien Foulon
+// It depends on the below use of '+' being recognized as invalid UTF-7
+$css = 'input[type="radio"]:checked + img {
+    border: 5px solid #0083ca;
+}';
+echo mb_detect_encoding($css, mb_list_encodings(), true), "\n";
+
+// Test cases courtesy of Kirill Roskolii and Chris Burgess
+echo "-- Māori text --\n";
+
+echo mb_detect_encoding("Total Māori,31.5,33.3,31.8,33,36.4,33.2,33.2", ['UTF-8', 'ISO-8859-1', 'Windows-1251']), "\n";
+// Names of native birds from Aotearoa:
+echo mb_detect_encoding("Kākā", ['UTF-8', 'ISO-8859-1', 'Windows-1251']), "\n";
+echo mb_detect_encoding("Whēkau", ['UTF-8', 'ISO-8859-1', 'Windows-1251']), "\n";
+echo mb_detect_encoding("Tīwaiwaka", ['UTF-8', 'ISO-8859-1', 'Windows-1251']), "\n";
+echo mb_detect_encoding("Kōtuku", ['UTF-8', 'ISO-8859-1', 'Windows-1251']), "\n";
+echo mb_detect_encoding("Kererū", ['UTF-8', 'ISO-8859-1', 'Windows-1251']), "\n";
+echo mb_detect_encoding("Tūī", ['UTF-8', 'ISO-8859-1', 'Windows-1251']), "\n";
+
 echo "== DETECT ORDER ==\n";
 
 mb_detect_order('auto');
@@ -87,6 +113,17 @@ print("JIS: " . mb_detect_encoding($jis) . "\n");
 print("EUC-JP: " . mb_detect_encoding($euc_jp) . "\n");
 
 print("SJIS: " . mb_detect_encoding($sjis) . "\n");
+
+// Thanks to Ulrik Nielsen for the following tests; the hex strings are the same file, but in two
+// different text encodings
+// We do not have any strong hints showing that the second one is actually UTF-8...
+// but mb_detect_encoding still guesses UTF-8 because it is the first one in the list
+
+$win1252text = hex2bin("2320546869732066696c6520636f6e7461696e732057696e646f77732d3132353220656e636f646564206461746120616e642048544d4c20656e7469746965730a61626364650ae6f8e50af00a3c703e476f646461673c6272202f3e0a7b726561646f626a206f626a65637469643d24726573756c745b305d2e706172656e7469642061737369676e3d22646f63227d3c6272202f3e0a23205468697320697320746f20656e73757265207468617420646966666572656e74206b696e6473206f662048544d4c20656e74697469657320617265206265696e6720636f6e76657274656420636f72726563746c790af00ad00a2623383739313b0a262331373238373b0a262333383937393b0a2623353437333b0a616263646520e6f8e520f020d0203c703e476f646461673c6272202f3e207b726561646f626a206f626a65637469643d24726573756c745b305d2e706172656e7469642061737369676e3d22646f63227d3c6272202f3e202623383739313b20262331373238373b20262333383937393b202623353437333b0a232054686520666f6c6c6f77696e67206368617261637465727320617265207370656369616c206368617261637465727320746861742068617320646966666572656e7420636f646520706f696e747320696e2049534f2d383835392d3120616e642057696e646f77732d31323532202d207468617420776520646966666572656e746961746520636f72726563746c79206265747765656e2049534f2d383835392d3120616e642057696e646f77732d313235320a8c0a890a2320506f6c69736820737472696e670a50727a656a6426233337383b20646f2070727a65676c26233236313b64750a");
+echo mb_detect_encoding($win1252text, ['UTF-8', 'CP1252', 'ISO-8859-1'], true), "\n";
+
+$utf8text = hex2bin("2320546869732066696c6520636f6e7461696e73205554462d3820656e636f64656420646174610a61626364650ac3a6c3b8c3a50ac3b00a3c703e476f646461673c6272202f3e0a7b726561646f626a206f626a65637469643d24726573756c745b305d2e706172656e7469642061737369676e3d22646f63227d3c6272202f3e0a23205468697320697320746f20656e73757265207468617420646966666572656e74206b696e6473206f662048544d4c20656e74697469657320617265206265696e6720636f6e76657274656420636f72726563746c790ac3b00ac3900ae289970ae48e870ae9a1830ae195a10a616263646520c3a6c3b8c3a520c3b020c390203c703e476f646461673c6272202f3e207b726561646f626a206f626a65637469643d24726573756c745b305d2e706172656e7469642061737369676e3d22646f63227d3c6272202f3e20e2899720e48e8720e9a18320e195a10a232054686520666f6c6c6f77696e67206368617261637465727320617265207370656369616c206368617261637465727320746861742068617320646966666572656e7420636f646520706f696e747320696e2049534f2d383835392d3120616e642057696e646f77732d31323532202d207468617420776520646966666572656e746961746520636f72726563746c79206265747765656e2049534f2d383835392d3120616e642057696e646f77732d313235320ac5920ae280b00a2320506f6c69736820737472696e670a50727a656a64c5ba20646f2070727a65676cc48564750a");
+echo mb_detect_encoding($utf8text, ['UTF-8', 'CP1252', 'ISO-8859-1'], true), "\n";
 
 echo "== INVALID PARAMETER ==\n";
 
@@ -99,6 +136,30 @@ try {
 } catch (\ValueError $e) {
     echo $e->getMessage() . \PHP_EOL;
 }
+
+echo "== BOM TEST ==\n";
+
+$str = chr(239).chr(187).chr(191).chr(195).chr(180); // UTF-8 BOM followed by ô
+var_dump(mb_detect_encoding($str, ['UTF-8', 'ISO-8859-1'], true));
+// U+4E4E is the Chinese character 乎; normally it would be impossible to distinguish UTF-16LE from UTF-16BE
+// But the BOM can tell us which one it is
+var_dump(mb_detect_encoding("\xFE\xFF\x4E\x4E", ['UTF-8', 'ISO-8859-1', 'UTF-16LE', 'UTF-16BE'], true));
+var_dump(mb_detect_encoding("\xFF\xFE\x4E\x4E", ['UTF-8', 'ISO-8859-1', 'UTF-16LE', 'UTF-16BE'], true));
+// However, a BOM should only appear at the beginning of the string
+$detected = mb_detect_encoding("\x4E\x4E\xFE\xFF\x4E\x4E", ['UTF-8', 'ISO-8859-1', 'UTF-16LE', 'UTF-16BE'], true);
+if ($detected === 'UTF-16BE' || $detected === 'UTF-16LE')
+    die("Don't accept a BOM in the middle of a string");
+
+echo "== CHECK FUNCTION TEST ==\n";
+
+function testCheckFn($str, $encoding, $encodings) {
+    if (mb_check_encoding($str, $encoding))
+        die("Input string " . bin2hex($str) . " should not be valid in " . $encoding);
+    if (mb_detect_encoding($str, $encodings, true) === $encoding)
+        die("mb_detect_encoding should never return " . $encoding . " for invalid input string " . bin2hex($str));
+}
+
+testCheckFn("abc + abc", "UTF-7", "UTF-7,UTF-8");
 
 echo "== TORTURE TEST ==\n";
 
@@ -345,6 +406,12 @@ Bad ASCII (non-strict): UTF-8
 Bad ASCII (strict): UTF-8
 Bad ASCII/UTF-8, with more errors for ASCII (non-strict): UTF-8
 Bad ASCII/UTF-8, with more errors for ASCII (strict): false
+UTF-8 BOM (non-strict): UTF-8
+UTF-8 BOM (strict): UTF-8
+UTF-16BE BOM (non-strict): UTF-16BE
+UTF-16BE BOM (strict): UTF-16BE
+UTF-16LE BOM (non-strict): UTF-16LE
+UTF-16LE BOM (strict): UTF-16LE
 SJIS: SJIS
 JIS: JIS
 EUC-JP (strict): EUC-JP
@@ -365,13 +432,29 @@ UTF-8
 UTF-8
 UTF-8
 SJIS
+UTF-8
+-- Māori text --
+UTF-8
+UTF-8
+UTF-8
+UTF-8
+UTF-8
+UTF-8
+UTF-8
 == DETECT ORDER ==
 JIS: JIS
 EUC-JP: EUC-JP
 SJIS: SJIS
+Windows-1252
+UTF-8
 == INVALID PARAMETER ==
 INT: EUC-JP
 EUC-JP: EUC-JP
 mb_detect_encoding(): Argument #2 ($encodings) contains invalid encoding "BAD"
+== BOM TEST ==
+string(5) "UTF-8"
+string(8) "UTF-16BE"
+string(8) "UTF-16LE"
+== CHECK FUNCTION TEST ==
 == TORTURE TEST ==
 Done!
